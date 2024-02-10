@@ -279,8 +279,7 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        let lock = self.state.clone();
-        let state = lock.read();
+        let state = self.state.read();
 
         // Copies pointers but not the actual data, so reasonably effcient
         let mut all_memtables = state.imm_memtables.clone();
@@ -304,30 +303,39 @@ impl LsmStorageInner {
         unimplemented!()
     }
 
-    /// Put a key-value pair into the storage by writing into the current memtable.
-    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        let state = self.state.clone();
-        let memtable = state.read().memtable.clone();
-        memtable.put(key, value)?;
+    fn may_freeze(&self, memtable: Arc<MemTable>) -> Result<()> {
+        // We write-lock self.state after entering self.force_freeze_memtable,
+        // so we need to prevent two threads execute it concurrently.
+        // It's important to check size again after acquiring self.state_lock.
+        if memtable.approximate_size() > self.options.target_sst_size {
+            let state_lock = self.state_lock.lock();
 
-        if self.options.target_sst_size <= memtable.approximate_size() {
-            self.force_freeze_memtable(&self.state_lock.lock())?
+            if memtable.approximate_size() > self.options.target_sst_size {
+                self.force_freeze_memtable(&state_lock)?
+            }
         }
 
         Ok(())
     }
 
+    /// Put a key-value pair into the storage by writing into the current memtable.
+    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        let state = self.state.read();
+        let memtable = state.memtable.clone();
+        memtable.put(key, value)?;
+        drop(state);
+
+        self.may_freeze(memtable)
+    }
+
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, key: &[u8]) -> Result<()> {
-        let lock = self.state.clone();
-        let memtable = lock.read().memtable.clone();
+        let state = self.state.read();
+        let memtable = state.memtable.clone();
         memtable.put(key, &[])?;
+        drop(state);
 
-        if self.options.target_sst_size <= memtable.approximate_size() {
-            self.force_freeze_memtable(&self.state_lock.lock())?
-        }
-
-        Ok(())
+        self.may_freeze(memtable)
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
