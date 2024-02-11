@@ -62,6 +62,17 @@ impl StorageIterator for LsmIterator {
 /// A wrapper around existing iterator, will prevent users from calling `next` when the iterator is
 /// invalid. If an iterator is already invalid, `next` does not do anything. If `next` returns an error,
 /// `is_valid` should return false, and `next` should always return an error.
+///
+/// Error implies invalidness. But not the other way around.
+/// Case 1: The iterator becomes invalid even if `next` has never returned an error.
+/// In this case, next() should do nothing and keeps returning ok.
+/// Case 2: After `next` has returned an error, the iterator becomes invalid and all
+/// subsequent `next` should return error.
+///
+/// Examples:
+/// Case 1. After `next` returns ok, the underlying iterator becomes invalid. The
+/// fused-iterator becomes invalid, even though no error has been returned.
+/// Case 2. The underlying iterator returns an error when calling `next`.
 pub struct FusedIterator<I: StorageIterator> {
     iter: I,
     has_errored: bool,

@@ -60,10 +60,6 @@ impl<I: StorageIterator> MergeIterator<I> {
             current,
         };
 
-        println!(
-            "MergeIterator created, current is_some: {:?}",
-            iter.current.is_some()
-        );
         iter
     }
 }
@@ -95,6 +91,8 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
         // Deletion is handled at the LSM level.
         let HeapWrapper(prev_idx, mut prev_iter) = self.current.take().unwrap();
 
+        // Call next() on any iterator that points to the current_key.
+        // If an iterator is no longer valid after calling next(), discard it.
         while let Some(mut iter) = self.iters.pop() {
             if iter.1.key().eq(&prev_iter.key()) {
                 iter.1.next()?;
@@ -107,6 +105,7 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
             }
         }
 
+        assert!(prev_iter.is_valid());
         prev_iter.next()?;
         if prev_iter.is_valid() {
             self.iters.push(HeapWrapper(prev_idx, prev_iter))
