@@ -60,6 +60,10 @@ impl<I: StorageIterator> MergeIterator<I> {
             current,
         };
 
+        println!(
+            "MergeIterator created, current is_some: {:?}",
+            iter.current.is_some()
+        );
         iter
     }
 }
@@ -82,6 +86,13 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     }
 
     fn next(&mut self) -> Result<()> {
+        if !self.is_valid() {
+            return Err(anyhow::anyhow!("next() called on invalid MergeIterator"));
+        }
+
+        // A memtable is not aware of deletion - it only knows about get() and put().
+        // Similar, a merge_iterator just merges a few MemtableIterators.
+        // Deletion is handled at the LSM level.
         let HeapWrapper(prev_idx, mut prev_iter) = self.current.take().unwrap();
 
         while let Some(mut iter) = self.iters.pop() {

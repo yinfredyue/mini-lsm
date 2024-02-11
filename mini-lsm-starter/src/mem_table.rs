@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use ouroboros::self_referencing;
@@ -121,7 +121,12 @@ impl MemTable {
 
         let mut iter = MemTableIteratorBuilder {
             map: self.map.clone(),
-            item: (Bytes::new(), Bytes::new()),
+
+            // HACK: MemTableIterator checks item.0.is_empty() to see if the 
+            // iterator is valid. next() returns error if the iterator is 
+            // invalid before move. To ensure the immediate next() call 
+            // runs, item.0 has to be nonempty.
+            item: (Bytes::copy_from_slice("INIT".as_bytes()), Bytes::new()),
 
             // `map.range(&self, range: RangeBounds<Q>)`
             // The RangeBounds<T> trait is implemented for (Bound<Byte>, Bound<Byte>)
@@ -130,6 +135,7 @@ impl MemTable {
         .build();
 
         iter.next().unwrap();
+
         iter
     }
 
@@ -189,6 +195,15 @@ impl StorageIterator for MemTableIterator {
     }
 
     fn next(&mut self) -> Result<()> {
+        // Returns error when:
+        // - Called when is_valid() returns true
+        // - Error when trying to move error
+        // Won't return error when:
+        // - After moving, is_valid() returns true
+        if !self.is_valid() {
+            return Err(anyhow!("next() called on invalid MemTableIterator"));
+        }
+
         let new_item;
 
         match self.with_iter_mut(|iter| iter.next()) {

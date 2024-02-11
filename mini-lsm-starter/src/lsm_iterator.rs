@@ -16,7 +16,13 @@ pub struct LsmIterator {
 }
 
 impl LsmIterator {
-    pub(crate) fn new(iter: LsmIteratorInner) -> Result<Self> {
+    pub(crate) fn new(mut iter: LsmIteratorInner) -> Result<Self> {
+        while iter.is_valid() && iter.value().is_empty() {
+            // A deletion
+            println!("{:?} was deleted, continue", iter.key());
+            iter.next()?;
+        }
+
         Ok(Self { inner: iter })
     }
 }
@@ -37,7 +43,19 @@ impl StorageIterator for LsmIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        self.inner.next()
+        if !self.inner.is_valid() {
+            return Err(anyhow!("next() called on invalid LsmIterator"));
+        }
+
+        self.inner.next()?;
+
+        while self.inner.is_valid() && self.value().is_empty() {
+            // A deletion
+            println!("{:?} was deleted, continue", self.key());
+            self.inner.next()?;
+        }
+
+        Ok(())
     }
 }
 
@@ -83,15 +101,18 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
 
     fn next(&mut self) -> Result<()> {
         if self.has_errored {
-            return Err(anyhow!("Has errored"))
+            return Err(anyhow!("next() called on errored FusedIterator"));
+        }
+
+        if !self.is_valid() {
+            return Ok(());
         }
 
         let res = self.iter.next();
-
         if res.is_err() {
             self.has_errored = true;
         }
 
-        res
+        return res;
     }
 }
