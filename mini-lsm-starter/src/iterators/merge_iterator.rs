@@ -41,13 +41,27 @@ impl<I: StorageIterator> Ord for HeapWrapper<I> {
 /// Merge multiple iterators of the same type. If the same key occurs multiple times in some
 /// iterators, prefer the one with smaller index.
 pub struct MergeIterator<I: StorageIterator> {
+    // Invariant: iters and current only contain valid iterators
     iters: BinaryHeap<HeapWrapper<I>>,
     current: Option<HeapWrapper<I>>,
 }
 
 impl<I: StorageIterator> MergeIterator<I> {
     pub fn create(iters: Vec<Box<I>>) -> Self {
-        unimplemented!()
+        let mut iters_heap = BinaryHeap::new();
+        for (idx, iter) in iters.into_iter().enumerate() {
+            if iter.is_valid() {
+                iters_heap.push(HeapWrapper(idx, iter));
+            }
+        }
+
+        let current = iters_heap.pop();
+        let iter = Self {
+            iters: iters_heap,
+            current,
+        };
+
+        iter
     }
 }
 
@@ -57,18 +71,39 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     type KeyType<'a> = KeySlice<'a>;
 
     fn key(&self) -> KeySlice {
-        unimplemented!()
+        self.current.as_ref().unwrap().1.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.current.as_ref().unwrap().1.value()
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.current.is_some()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        let HeapWrapper(prev_idx, mut prev_iter) = self.current.take().unwrap();
+
+        while let Some(mut iter) = self.iters.pop() {
+            if iter.1.key().eq(&prev_iter.key()) {
+                iter.1.next()?;
+                if iter.1.is_valid() {
+                    self.iters.push(iter);
+                }
+            } else {
+                self.iters.push(iter);
+                break;
+            }
+        }
+
+        prev_iter.next()?;
+        if prev_iter.is_valid() {
+            self.iters.push(HeapWrapper(prev_idx, prev_iter))
+        }
+
+        self.current = self.iters.pop();
+
+        Ok(())
     }
 }

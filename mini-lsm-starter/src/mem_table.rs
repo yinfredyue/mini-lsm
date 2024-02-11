@@ -189,10 +189,10 @@ impl StorageIterator for MemTableIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        let mut new_item = self.borrow_item().clone();
+        let new_item;
 
         match self.with_iter_mut(|iter| iter.next()) {
-            None => new_item= (Bytes::new(), Bytes::new()),
+            None => new_item = (Bytes::new(), Bytes::new()),
             Some(entry) => {
                 new_item = (entry.key().clone(), entry.value().clone());
             }
