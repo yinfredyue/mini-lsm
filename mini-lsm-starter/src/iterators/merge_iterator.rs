@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::cmp::{self};
 use std::collections::BinaryHeap;
 
@@ -41,7 +38,9 @@ impl<I: StorageIterator> Ord for HeapWrapper<I> {
 /// Merge multiple iterators of the same type. If the same key occurs multiple times in some
 /// iterators, prefer the one with smaller index.
 pub struct MergeIterator<I: StorageIterator> {
-    // Invariant: iters and current only contain valid iterators
+    // Invariant: iters and current only contain valid iterators.
+    // This is necessary HeapWrapper::partial_cmp assumes the iter is valid - it
+    // calls key() without checking is_valid()
     iters: BinaryHeap<HeapWrapper<I>>,
     current: Option<HeapWrapper<I>>,
 }
