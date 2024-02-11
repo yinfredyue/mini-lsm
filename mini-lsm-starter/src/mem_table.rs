@@ -122,9 +122,9 @@ impl MemTable {
         let mut iter = MemTableIteratorBuilder {
             map: self.map.clone(),
 
-            // HACK: MemTableIterator checks item.0.is_empty() to see if the 
-            // iterator is valid. next() returns error if the iterator is 
-            // invalid before move. To ensure the immediate next() call 
+            // HACK: MemTableIterator checks item.0.is_empty() to see if the
+            // iterator is valid. next() returns error if the iterator is
+            // invalid before move. To ensure the immediate next() call
             // runs, item.0 has to be nonempty.
             item: (Bytes::copy_from_slice("INIT".as_bytes()), Bytes::new()),
 
