@@ -36,6 +36,9 @@ impl BlockBuilder {
     /// Adds a key-value pair to the block. Returns false when the block is full.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
+        // Assumes that `add` is given keys in sorted order and we don't need
+        // to perform ordering ourselves.
+
         // Don't check size limit for the first key-value pair
         if !self.data.is_empty() && self.will_exceed_size_limit(key, value) {
             return false;

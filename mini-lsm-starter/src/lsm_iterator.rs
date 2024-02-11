@@ -124,6 +124,6 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
             self.has_errored = true;
         }
 
-        return res;
+        res
     }
 }

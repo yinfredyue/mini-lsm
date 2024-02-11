@@ -204,13 +204,9 @@ impl StorageIterator for MemTableIterator {
             return Err(anyhow!("next() called on invalid MemTableIterator"));
         }
 
-        let new_item;
-
-        match self.with_iter_mut(|iter| iter.next()) {
-            None => new_item = (Bytes::new(), Bytes::new()),
-            Some(entry) => {
-                new_item = (entry.key().clone(), entry.value().clone());
-            }
+        let new_item = match self.with_iter_mut(|iter| iter.next()) {
+            None => (Bytes::new(), Bytes::new()),
+            Some(entry) => (entry.key().clone(), entry.value().clone()),
         };
 
         self.with_item_mut(|item| *item = new_item);
