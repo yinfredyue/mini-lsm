@@ -97,8 +97,10 @@ impl MemTable {
     /// In week 1, day 1, simply put the key-value pair into the skipmap.
     /// In week 2, day 6, also flush the data to WAL.
     pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        let total_size  =  key.len() + value.len();
-        self.approximate_size.clone().fetch_add(total_size, std::sync::atomic::Ordering::SeqCst);
+        let total_size = key.len() + value.len();
+        self.approximate_size
+            .clone()
+            .fetch_add(total_size, std::sync::atomic::Ordering::SeqCst);
 
         self.map
             .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
@@ -113,8 +115,22 @@ impl MemTable {
     }
 
     /// Get an iterator over a range of keys.
-    pub fn scan(&self, _lower: Bound<&[u8]>, _upper: Bound<&[u8]>) -> MemTableIterator {
-        unimplemented!()
+    pub fn scan(&self, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> MemTableIterator {
+        let lower = map_bound(lower);
+        let upper = map_bound(upper);
+
+        let mut iter = MemTableIteratorBuilder {
+            map: self.map.clone(),
+            item: (Bytes::new(), Bytes::new()),
+
+            // `map.range(&self, range: RangeBounds<Q>)`
+            // The RangeBounds<T> trait is implemented for (Bound<Byte>, Bound<Byte>)
+            iter_builder: |map: &Arc<SkipMap<Bytes, Bytes>>| map.range((lower, upper)),
+        }
+        .build();
+
+        iter.next().unwrap();
+        iter
     }
 
     /// Flush the mem-table to SSTable. Implement in week 1 day 6.
@@ -153,6 +169,7 @@ pub struct MemTableIterator {
     #[not_covariant]
     iter: SkipMapRangeIter<'this>,
     /// Stores the current key-value pair.
+    /// When item.0 is empty, the iterator is invalid
     item: (Bytes, Bytes),
 }
 
@@ -160,18 +177,28 @@ impl StorageIterator for MemTableIterator {
     type KeyType<'a> = KeySlice<'a>;
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        &self.borrow_item().1
     }
 
     fn key(&self) -> KeySlice {
-        unimplemented!()
+        KeySlice::from_slice(&self.borrow_item().0)
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        !self.borrow_item().0.is_empty()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        let mut new_item = self.borrow_item().clone();
+
+        match self.with_iter_mut(|iter| iter.next()) {
+            None => new_item= (Bytes::new(), Bytes::new()),
+            Some(entry) => {
+                new_item = (entry.key().clone(), entry.value().clone());
+            }
+        };
+
+        self.with_item_mut(|item| *item = new_item);
+        Ok(())
     }
 }
