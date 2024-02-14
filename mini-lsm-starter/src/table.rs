@@ -224,14 +224,37 @@ impl SsTable {
 
     /// Read a block from disk, with block cache. (Day 4)
     pub fn read_block_cached(&self, block_idx: usize) -> Result<Arc<Block>> {
-        unimplemented!()
+        match &self.block_cache {
+            None => self.read_block(block_idx),
+            Some(cache) => {
+                cache
+                    .try_get_with((self.id, block_idx), || self.read_block(block_idx))
+                    .map_err(|err| anyhow::Error::msg(err.to_string())) // This is kinda hacky
+            }
+        }
     }
 
     /// Find the block that may contain `key`.
     /// Note: You may want to make use of the `first_key` stored in `BlockMeta`.
     /// You may also assume the key-value pairs stored in each consecutive block are sorted.
     pub fn find_block_idx(&self, key: KeySlice) -> usize {
-        unimplemented!()
+        // `partition_point` returns [0, len-1]. It assumes that the predicate
+        // evaluates to true on the prefix, and evaluates to false on the suffix.
+        // [ true, true, ..., true, false, false, ..., false ].
+        // It returns the index to the first element that evaluates to false.
+        //
+        // When predicat is "first_key <= key", the returned `idx` is the first
+        // element s.t. "first_key > key". So, we should start searching at
+        // max(0, `idx-1`).
+        let idx = self
+            .block_meta
+            .partition_point(|meta| meta.first_key.as_key_slice() <= key);
+
+        if idx > 0 {
+            idx - 1
+        } else {
+            idx
+        }
     }
 
     /// Get number of data blocks.
