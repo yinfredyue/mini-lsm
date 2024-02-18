@@ -524,6 +524,7 @@ impl LsmStorageInner {
                 }
                 Bound::Excluded(upper) => {
                     // TODO: Change to >
+                    // https://discord.com/channels/1197355762297610260/1197435686370947112/1208852441769185351
                     KeySlice::from_slice(upper) >= sst.first_key().as_key_slice()
                 }
                 Bound::Unbounded => true,
