@@ -2,28 +2,48 @@
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use anyhow::{anyhow, Result};
+use bytes::Bytes;
+use std::ops::Bound;
 
 use crate::{
-    iterators::{merge_iterator::MergeIterator, StorageIterator},
+    iterators::{
+        merge_iterator::MergeIterator, two_merge_iterator::TwoMergeIterator, StorageIterator,
+    },
     mem_table::MemTableIterator,
+    table::SsTableIterator,
 };
 
 /// Represents the internal type for an LSM iterator. This type will be changed across the tutorial for multiple times.
-type LsmIteratorInner = MergeIterator<MemTableIterator>;
+type LsmIteratorInner =
+    TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>;
 
 pub struct LsmIterator {
     inner: LsmIteratorInner,
+
+    // W1D5: SsTableIterator doesn't support upper bound. But LsmStorage
+    // supports scan(lower, upper). Thus, LsmIterator has to handle the upper
+    // bound.
+    upper: Bound<Bytes>,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(mut iter: LsmIteratorInner) -> Result<Self> {
+    pub(crate) fn new(mut iter: LsmIteratorInner, upper: Bound<Bytes>) -> Result<Self> {
         while iter.is_valid() && iter.value().is_empty() {
             // A deletion
             println!("{:?} was deleted, continue", iter.key());
             iter.next()?;
         }
 
-        Ok(Self { inner: iter })
+        Ok(Self { inner: iter, upper })
+    }
+
+    // Returns if the iterator has crossed `upper` and thus is not valid
+    fn crossed_upper(&self) -> bool {
+        match &self.upper {
+            Bound::Included(upper) => self.key() > upper,
+            Bound::Excluded(upper) => self.key() >= upper,
+            Bound::Unbounded => false,
+        }
     }
 }
 
@@ -31,7 +51,7 @@ impl StorageIterator for LsmIterator {
     type KeyType<'a> = &'a [u8];
 
     fn is_valid(&self) -> bool {
-        self.inner.is_valid()
+        self.inner.is_valid() && !self.crossed_upper()
     }
 
     fn key(&self) -> &[u8] {
