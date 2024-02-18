@@ -474,8 +474,6 @@ impl LsmStorageInner {
         lower: Bound<&[u8]>,
         upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        println!("scan({:?}, {:?})", lower, upper);
-
         let memtable_iter = self.get_memtable_iter(lower, upper);
         let sstable_iter = self.get_sstable_iter(lower)?;
 
