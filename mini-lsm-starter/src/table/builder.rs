@@ -33,6 +33,7 @@ impl SsTableBuilder {
     }
 
     // Append data in self.builder to self.data and self.meta
+    // Note: this function consumes self.first_key and self.last_key
     fn build_block(&mut self) {
         let full_builder = std::mem::replace(&mut self.builder, BlockBuilder::new(self.block_size));
 
@@ -57,16 +58,25 @@ impl SsTableBuilder {
     /// Note: You should split a new block when the current block is full.(`std::mem::replace` may
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
+        // println!("SsTableBuilder::add({:?}, {:?})", key, value);
+
         let added = self.builder.add(key, value);
         if !added {
             self.build_block();
             assert!(self.builder.add(key, value));
         }
 
-        if self.first_key.is_empty() {
+        if self.first_key.is_empty() || KeySlice::from_slice(&self.first_key) > key {
             self.first_key = key.into_inner().to_vec();
         }
-        self.last_key = key.into_inner().to_vec();
+        if self.last_key.is_empty() || KeySlice::from_slice(&self.last_key) < key {
+            self.last_key = key.into_inner().to_vec();
+        }
+
+        // println!(
+        //     "first_key:{:?}, last_key:{:?}",
+        //     self.first_key, self.last_key
+        // );
     }
 
     /// Get the estimated size of the SSTable.
@@ -98,14 +108,28 @@ impl SsTableBuilder {
 
         let file = FileObject::create(path.as_ref(), res)?;
 
+        let table_first_key = self
+            .meta
+            .iter()
+            .map(|meta| meta.first_key.clone())
+            .min()
+            .unwrap();
+
+        let table_last_key = self
+            .meta
+            .iter()
+            .map(|meta| meta.last_key.clone())
+            .max()
+            .unwrap();
+
         Ok(SsTable {
             file,
             block_meta: self.meta,
             block_meta_offset,
             id,
             block_cache,
-            first_key: KeyBytes::from_bytes(Bytes::from(self.first_key)),
-            last_key: KeyBytes::from_bytes(Bytes::from(self.last_key)),
+            first_key: table_first_key,
+            last_key: table_last_key,
             bloom: None,
             max_ts: 0,
         })

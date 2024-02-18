@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
@@ -23,7 +23,7 @@ use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::{map_bound, MemTable, MemTableIterator};
 use crate::mvcc::LsmMvccInner;
-use crate::table::{SsTable, SsTableIterator};
+use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -158,7 +158,19 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
-        unimplemented!()
+        if let Some(join_hanlde) = self.flush_thread.lock().take() {
+            join_hanlde
+                .join()
+                .map_err(|_| anyhow!("Failed to join flush thread"))?
+        }
+
+        if let Some(join_hanlde) = self.compaction_thread.lock().take() {
+            join_hanlde
+                .join()
+                .map_err(|_| anyhow!("Failed to join flush thread"))?
+        }
+
+        Ok(())
     }
 
     /// Start the storage engine by either loading an existing directory or creating a new one if the directory does
@@ -256,6 +268,8 @@ impl LsmStorageInner {
             CompactionOptions::NoCompaction => CompactionController::NoCompaction,
         };
 
+        std::fs::create_dir_all(path)?;
+
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
             state_lock: Mutex::new(()),
@@ -301,7 +315,7 @@ impl LsmStorageInner {
         }
 
         // Read SSTs
-        let mut sstable_iter = self.get_sstable_iter(Bound::Included(key))?;
+        let mut sstable_iter = self.get_sstable_iter(Bound::Included(key), Bound::Unbounded)?;
         let keyslice = KeySlice::from_slice(key);
         while sstable_iter.is_valid() && sstable_iter.key() <= keyslice {
             if sstable_iter.key() == keyslice {
@@ -405,7 +419,52 @@ impl LsmStorageInner {
 
     /// Force flush the earliest-created immutable memtable to disk
     pub fn force_flush_next_imm_memtable(&self) -> Result<()> {
-        unimplemented!()
+        // 1. Hold self.state_lock s.t. force_flush_xxx and force_freeze_xxx
+        // cannot execute concurrently.
+        // 2. Read-lock self.state when deciding which memtable to flush, and
+        // release after that.
+        // 3. Doesn't hold any lock when flushing!
+        // 4. After done flushing, acquire write lock to update self.imm_memtables
+        // , self.l0_sstables, and self.sstables
+        //
+        // Q: Is it ok to read-lock, read self.imm_memtables.last(), release
+        // lock, and self.imm_memtables.pop()?
+        // A: Self.imm_memtables are only written by force_flush_xx and
+        // force_freeze_xx. Because we acquired self.state_lock, there's no
+        // concurrently writes. Also, we acquire read-lock and write-lock
+        // appropriately, so this is safe.
+        let _state_lock = self.state_lock.lock();
+
+        let memtable_to_flush;
+        {
+            let guard = self.state.read();
+            memtable_to_flush = guard
+                .imm_memtables
+                .last()
+                .ok_or(anyhow!("No immutable memtable?"))?
+                .clone();
+        }
+
+        let mut sst_builder = SsTableBuilder::new(self.options.block_size);
+        memtable_to_flush.flush(&mut sst_builder)?;
+        let sst_id = memtable_to_flush.id();
+        let sstable = sst_builder.build(
+            sst_id,
+            Some(self.block_cache.clone()),
+            self.path_of_sst(sst_id),
+        )?;
+
+        {
+            let mut guard = self.state.write();
+
+            let mut new_state = guard.as_ref().clone();
+            new_state.imm_memtables.pop().unwrap();
+            new_state.l0_sstables.insert(0, sst_id);
+            new_state.sstables.insert(sst_id, Arc::new(sstable));
+            *guard = Arc::new(new_state);
+        }
+
+        Ok(())
     }
 
     pub fn new_txn(&self) -> Result<()> {
@@ -429,7 +488,11 @@ impl LsmStorageInner {
         MergeIterator::create(memtable_iters)
     }
 
-    pub fn get_sstable_iter(&self, lower: Bound<&[u8]>) -> Result<MergeIterator<SsTableIterator>> {
+    pub fn get_sstable_iter(
+        &self,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+    ) -> Result<MergeIterator<SsTableIterator>> {
         let state = self.state.read();
 
         let sstables: Vec<Arc<SsTable>> = state
@@ -443,6 +506,37 @@ impl LsmStorageInner {
                     .ok_or_else(|| anyhow::anyhow!("sstable not found"))
             })
             .collect::<Result<_>>()?;
+
+        let sstables = sstables
+            .into_iter()
+            .filter(|sst| match lower {
+                Bound::Included(lower) => {
+                    KeySlice::from_slice(lower) <= sst.last_key().as_key_slice()
+                }
+                Bound::Excluded(lower) => {
+                    KeySlice::from_slice(lower) < sst.last_key().as_key_slice()
+                }
+                Bound::Unbounded => true,
+            })
+            .filter(|sst| match upper {
+                Bound::Included(upper) => {
+                    KeySlice::from_slice(upper) >= sst.first_key().as_key_slice()
+                }
+                Bound::Excluded(upper) => {
+                    // TODO: Change to >
+                    KeySlice::from_slice(upper) >= sst.first_key().as_key_slice()
+                }
+                Bound::Unbounded => true,
+            })
+            .collect::<Vec<_>>();
+
+        let mut sstables_for_debug = state
+            .sstables
+            .iter()
+            .map(|sst| (sst.0, sst.1.first_key(), sst.1.last_key()))
+            .collect::<Vec<_>>();
+        sstables_for_debug.sort_by(|a, b| a.0.cmp(b.0));
+        println!("{:?}, {:?}", state.l0_sstables, sstables_for_debug);
 
         let sstable_iters: Vec<SsTableIterator> = sstables
             .into_iter()
@@ -475,7 +569,7 @@ impl LsmStorageInner {
         upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
         let memtable_iter = self.get_memtable_iter(lower, upper);
-        let sstable_iter = self.get_sstable_iter(lower)?;
+        let sstable_iter = self.get_sstable_iter(lower, upper)?;
 
         let lsm_iter = TwoMergeIterator::create(memtable_iter, sstable_iter)?;
         Ok(FusedIterator::new(LsmIterator::new(
