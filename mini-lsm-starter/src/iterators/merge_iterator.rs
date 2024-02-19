@@ -81,7 +81,7 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
 
     fn next(&mut self) -> Result<()> {
         if !self.is_valid() {
-            return Err(anyhow::anyhow!("next() called on invalid MergeIterator"));
+            return Ok(());
         }
 
         // A memtable is not aware of deletion - it only knows about get() and put().

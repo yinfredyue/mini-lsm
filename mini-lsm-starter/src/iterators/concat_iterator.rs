@@ -18,7 +18,14 @@ pub struct SstConcatIterator {
 
 impl SstConcatIterator {
     pub fn create_and_seek_to_first(sstables: Vec<Arc<SsTable>>) -> Result<Self> {
-        assert!(!sstables.is_empty());
+        if sstables.is_empty() {
+            return Ok(Self {
+                current: None,
+                next_sst_idx: 0,
+                sstables,
+            });
+        }
+
         let current = SsTableIterator::create_and_seek_to_first(sstables[0].clone())?;
         assert!(current.is_valid());
         Ok(Self {
@@ -29,6 +36,14 @@ impl SstConcatIterator {
     }
 
     pub fn create_and_seek_to_key(sstables: Vec<Arc<SsTable>>, key: KeySlice) -> Result<Self> {
+        if sstables.is_empty() {
+            return Ok(Self {
+                current: None,
+                next_sst_idx: 0,
+                sstables,
+            });
+        }
+
         let mut idx = {
             // `idx` is the first SST s.t. first_key > key.
             let idx = sstables.partition_point(|sst| sst.first_key().as_key_slice() <= key);
@@ -69,6 +84,10 @@ impl StorageIterator for SstConcatIterator {
     }
 
     fn next(&mut self) -> Result<()> {
+        if !self.is_valid() {
+            return Ok(());
+        }
+
         let mut current = self.current.take().unwrap();
 
         current.next()?;
@@ -86,5 +105,15 @@ impl StorageIterator for SstConcatIterator {
 
     fn num_active_iterators(&self) -> usize {
         1
+    }
+}
+
+impl std::fmt::Debug for SstConcatIterator {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "SsTableIterator[current={:?}, next_sst_idx={}]",
+            self.current, self.next_sst_idx
+        )
     }
 }

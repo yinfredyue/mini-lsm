@@ -129,7 +129,7 @@ impl LsmStorageInner {
 
                 let sstable_iters = sstables
                     .into_iter()
-                    .map(|table| SsTableIterator::create_and_seek_to_first(table))
+                    .map(SsTableIterator::create_and_seek_to_first)
                     .collect::<Result<Vec<_>>>()?
                     .into_iter()
                     .map(Box::new)
@@ -215,7 +215,7 @@ impl LsmStorageInner {
                 new_state.sstables.remove(&l1_sst_id);
             }
             // Delete old l1
-            for old_l1_sst_id in &guard.l0_sstables {
+            for old_l1_sst_id in new_state.levels[0].1.iter() {
                 new_state.sstables.remove(old_l1_sst_id);
             }
             // Add new l1

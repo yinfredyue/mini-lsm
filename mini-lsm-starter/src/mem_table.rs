@@ -217,3 +217,16 @@ impl StorageIterator for MemTableIterator {
         Ok(())
     }
 }
+impl std::fmt::Debug for MemTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "MemTable[id={:?}, map={:?}]",
+            self.id,
+            self.map
+                .iter()
+                .map(|x| (x.key().clone(), x.value().clone()))
+                .collect::<Vec<_>>()
+        )
+    }
+}

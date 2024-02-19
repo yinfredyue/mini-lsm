@@ -71,16 +71,24 @@ impl<
     }
 
     fn next(&mut self) -> Result<()> {
+        if !self.is_valid() {
+            return Ok(());
+        }
+
         if self.pointing_to_first {
             if self.b.is_valid() && self.a.key() == self.b.key() {
                 self.b.next()?;
             }
-            self.a.next()?;
+            if self.a.is_valid() {
+                self.a.next()?;
+            }
         } else {
             if self.a.is_valid() && self.a.key() == self.b.key() {
                 self.a.next()?;
             }
-            self.b.next()?;
+            if self.b.is_valid() {
+                self.b.next()?;
+            }
         }
 
         self.pointing_to_first = self.should_point_to_first();
