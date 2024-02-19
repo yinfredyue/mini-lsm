@@ -107,3 +107,9 @@ impl StorageIterator for SsTableIterator {
         Ok(())
     }
 }
+
+impl std::fmt::Debug for SsTableIterator {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "SsTableIterator[on={:?}]", self.table)
+    }
+}

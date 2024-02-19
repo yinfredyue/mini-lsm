@@ -282,3 +282,13 @@ impl SsTable {
         self.max_ts
     }
 }
+
+impl std::fmt::Debug for SsTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "SsTable[{}, first={:?}, last={:?}]",
+            self.id, self.first_key, self.last_key
+        )
+    }
+}

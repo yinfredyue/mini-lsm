@@ -58,8 +58,6 @@ impl SsTableBuilder {
     /// Note: You should split a new block when the current block is full.(`std::mem::replace` may
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
-        // println!("SsTableBuilder::add({:?}, {:?})", key, value);
-
         let added = self.builder.add(key, value);
         if !added {
             self.build_block();
@@ -72,11 +70,6 @@ impl SsTableBuilder {
         if self.last_key.is_empty() || KeySlice::from_slice(&self.last_key) < key {
             self.last_key = key.into_inner().to_vec();
         }
-
-        // println!(
-        //     "first_key:{:?}, last_key:{:?}",
-        //     self.first_key, self.last_key
-        // );
     }
 
     /// Get the estimated size of the SSTable.
