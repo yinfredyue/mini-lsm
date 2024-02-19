@@ -238,7 +238,7 @@ impl SsTable {
     /// Note: You may want to make use of the `first_key` stored in `BlockMeta`.
     /// You may also assume the key-value pairs stored in each consecutive block are sorted.
     pub fn find_block_idx(&self, key: KeySlice) -> usize {
-        // `partition_point` returns [0, len-1]. It assumes that the predicate
+        // `partition_point` returns [0, len]. It assumes that the predicate
         // evaluates to true on the prefix, and evaluates to false on the suffix.
         // [ true, true, ..., true, false, false, ..., false ].
         // It returns the index to the first element that evaluates to false.
@@ -250,10 +250,10 @@ impl SsTable {
             .block_meta
             .partition_point(|meta| meta.first_key.as_key_slice() <= key);
 
-        if idx > 0 {
-            idx - 1
-        } else {
+        if idx == 0 {
             idx
+        } else {
+            idx - 1
         }
     }
 
