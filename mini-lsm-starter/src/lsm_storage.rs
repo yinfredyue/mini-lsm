@@ -304,7 +304,6 @@ impl LsmStorageInner {
         let keyslice = KeySlice::from_slice(key);
 
         // Read memtables
-        // Copies pointers but not the actual data, so reasonably effcient
         println!("Reading memtables");
         let memtable_iter = self.get_memtable_iter(Bound::Included(key), Bound::Unbounded);
         if memtable_iter.is_valid() && memtable_iter.key() == keyslice {
@@ -528,9 +527,7 @@ impl LsmStorageInner {
                     KeySlice::from_slice(upper) >= sst.first_key().as_key_slice()
                 }
                 Bound::Excluded(upper) => {
-                    // TODO: Change to >
-                    // https://discord.com/channels/1197355762297610260/1197435686370947112/1208852441769185351
-                    KeySlice::from_slice(upper) >= sst.first_key().as_key_slice()
+                    KeySlice::from_slice(upper) > sst.first_key().as_key_slice()
                 }
                 Bound::Unbounded => true,
             })
