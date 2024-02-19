@@ -112,13 +112,26 @@ impl LsmStorageInner {
     fn compact(&self, task: &CompactionTask) -> Result<Vec<Arc<SsTable>>> {
         match task {
             CompactionTask::Leveled(_) => todo!(),
-            CompactionTask::Tiered(_) => todo!(),
+            CompactionTask::Tiered(task) => self.tiered_compaction(task),
             CompactionTask::Simple(task) => self.simple_compaction(task),
             CompactionTask::ForceFullCompaction {
                 l0_sstables,
                 l1_sstables,
             } => self.full_compactation([l0_sstables.clone(), l1_sstables.clone()].concat()),
         }
+    }
+
+    fn tiered_compaction(&self, task: &TieredCompactionTask) -> Result<Vec<Arc<SsTable>>> {
+        let guard = self.state.read();
+
+        let ssts: Vec<Arc<SsTable>> = task
+            .tiers
+            .iter()
+            .flat_map(|(_level, ssts)| ssts.iter().map(|id| guard.sstables.get(id).unwrap()))
+            .cloned()
+            .collect();
+
+        self.full_compaction_core(ssts)
     }
 
     fn simple_compaction(&self, task: &SimpleLeveledCompactionTask) -> Result<Vec<Arc<SsTable>>> {
@@ -279,7 +292,7 @@ impl LsmStorageInner {
 
         let task = compaction_task.unwrap();
         let sorted_run = self.compact(&task)?;
-        let new_ssts = sorted_run.iter().map(|x| x.sst_id()).collect::<Vec<_>>();
+        let sorted_run_sst_ids = sorted_run.iter().map(|x| x.sst_id()).collect::<Vec<_>>();
 
         let ssts_to_remove = {
             let _state_lock = self.state_lock.lock();
@@ -287,7 +300,7 @@ impl LsmStorageInner {
 
             let (mut new_state, ssts_to_remove) = self
                 .compaction_controller
-                .apply_compaction_result(&state, &task, &new_ssts);
+                .apply_compaction_result(&state, &task, &sorted_run_sst_ids);
 
             for sst in &ssts_to_remove {
                 new_state.sstables.remove(sst);

@@ -124,6 +124,7 @@ impl SimpleLeveledCompactionController {
         let mut ssts_to_remove = Vec::new();
 
         // Ln compaction
+        // For simple leveled compaction, n can only be 0 or 1.
         // Ln and Ln+1 are merged to produce a new sorted run for Ln+1.
         // Delete compacted Ln tables
         // Delete compacted Ln+1 tables

@@ -39,6 +39,10 @@ pub struct LsmStorageState {
     pub l0_sstables: Vec<usize>,
     /// SsTables sorted by key range; L1 - L_max for leveled compaction, or tiers for tiered
     /// compaction.
+    /// It's an ordered list of (id, sst_ids), representing levels from top to
+    /// bottom. The first element is usually L0. When using tiered compaction,
+    /// the first element is the first sorted run.
+    /// Note that there's no ordering guarantee on levels' ids.
     pub levels: Vec<(usize, Vec<usize>)>,
     /// SST objects.
     pub sstables: HashMap<usize, Arc<SsTable>>,
@@ -461,7 +465,13 @@ impl LsmStorageInner {
 
             let mut new_state = guard.as_ref().clone();
             new_state.imm_memtables.pop().unwrap();
-            new_state.l0_sstables.insert(0, sst_id);
+            if self.compaction_controller.flush_to_l0() {
+                // Flush to L0
+                new_state.l0_sstables.insert(0, sst_id);
+            } else {
+                // Insert a new sorted run
+                new_state.levels.insert(0, (sst_id, vec![sst_id]));
+            }
             new_state.sstables.insert(sst_id, Arc::new(sstable));
             *guard = Arc::new(new_state);
         }

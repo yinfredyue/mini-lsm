@@ -91,8 +91,6 @@ impl TieredCompactionController {
     }
 
     fn level_size(snapshot: &LsmStorageState, level: usize) -> usize {
-        assert!(level >= 1);
-
         for (curr_level, ssts) in snapshot.levels.iter() {
             if *curr_level == level {
                 return ssts.len();
@@ -114,7 +112,6 @@ impl TieredCompactionController {
         assert!(task.bottom_tier_included);
 
         let mut new_state = snapshot.clone();
-
         let mut ssts_to_remove = Vec::new();
 
         // All tiers are merged to create a new sorted run in a new level.
@@ -126,31 +123,24 @@ impl TieredCompactionController {
             tiers_by_level.insert(*level, ssts.clone());
         }
 
-        for (level, ssts) in new_state.levels.iter_mut() {
-            if let Some(tier) = tiers_by_level.get(level) {
-                for sst_to_remove in tier.iter().rev() {
-                    let popped = ssts.pop().unwrap();
-                    assert_eq!(popped, *sst_to_remove);
-                    ssts_to_remove.push(*sst_to_remove);
-                }
+        let mut levels = Vec::new();
+        let mut new_tier_added = false;
+        for (level, ssts) in snapshot.levels.iter() {
+            if let Some(mut to_remove) = tiers_by_level.remove(level) {
+                assert_eq!(to_remove, ssts.to_owned());
+                ssts_to_remove.append(&mut to_remove);
+            } else {
+                levels.push((*level, ssts.clone()));
+            }
+
+            // Make sure the new tier is in the right position!
+            if tiers_by_level.is_empty() && !new_tier_added {
+                levels.push((output[0], output.to_owned()));
+                new_tier_added = true;
             }
         }
 
-        // insert at the front
-        let next_level = tiers_by_level.keys().max().unwrap() + 1;
-        new_state
-            .levels
-            .insert(0, (next_level + 1, output.to_owned()));
-
-        // Delete empty levels
-        new_state.levels = new_state
-            .levels
-            .into_iter()
-            .filter(|(_, ssts)| !ssts.is_empty())
-            .collect();
-
-        println!("new_state.levels: {:?}", new_state.levels);
-
+        new_state.levels = levels;
         (new_state, ssts_to_remove)
     }
 }
