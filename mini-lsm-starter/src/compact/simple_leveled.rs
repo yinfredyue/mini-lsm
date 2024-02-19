@@ -123,37 +123,24 @@ impl SimpleLeveledCompactionController {
         let mut new_state = snapshot.clone();
         let mut ssts_to_remove = Vec::new();
 
-        match task.upper_level {
-            None => {
-                // L0 compaction:
-                // Delete compacted L0 tables
-                // Delete compacted L1 tables
-                // Add new L1 tables
+        // Ln compaction
+        // Ln and Ln+1 are merged to produce a new sorted run for Ln+1.
+        // Delete compacted Ln tables
+        // Delete compacted Ln+1 tables
+        // Add new Ln+1 tables
+        let n = task.upper_level.unwrap_or(0);
+        for compacted_ln_sst in task.upper_level_sst_ids.iter().rev() {
+            let popped = if n == 0 {
+                new_state.l0_sstables.pop().unwrap()
+            } else {
+                new_state.levels[n - 1].1.pop().unwrap()
+            };
 
-                for compacted_l0_sst in task.upper_level_sst_ids.iter().rev() {
-                    let popped = new_state.l0_sstables.pop().unwrap();
-                    ssts_to_remove.push(popped);
-                    assert_eq!(popped, *compacted_l0_sst);
-                }
-
-                ssts_to_remove.append(&mut new_state.levels[0].1);
-                new_state.levels[0].1 = output.to_owned();
-            }
-            Some(n) => {
-                // Ln compaction, where n = upper_level
-                // Delete compacted Ln tabls
-                // Delete compacted Ln+1 tables
-                // Add new Ln+1 tables
-                for compacted_ln_sst in task.upper_level_sst_ids.iter().rev() {
-                    let popped = new_state.levels[n - 1].1.pop().unwrap();
-                    ssts_to_remove.push(popped);
-                    assert_eq!(popped, *compacted_ln_sst);
-                }
-
-                ssts_to_remove.append(&mut new_state.levels[n].1);
-                new_state.levels[n].1 = output.to_owned();
-            }
-        };
+            ssts_to_remove.push(popped);
+            assert_eq!(popped, *compacted_ln_sst);
+        }
+        ssts_to_remove.append(&mut new_state.levels[n].1);
+        new_state.levels[n].1 = output.to_owned();
 
         (new_state, ssts_to_remove)
     }
