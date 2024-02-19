@@ -298,8 +298,7 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        let state = self.state.read();
-        println!("get({:?}), state:{:?}", key, state);
+        println!("get({:?})", key);
 
         let keyslice = KeySlice::from_slice(key);
 
@@ -323,9 +322,9 @@ impl LsmStorageInner {
             }
         }
 
-        // Read L1 SSTs
-        println!("Reading l1");
-        let l1_ssts_iter = self.get_l1_iter(Bound::Included(key))?;
+        // Read Lower SSTs
+        println!("Reading lower levels");
+        let l1_ssts_iter = self.get_lower_sst_iter(Bound::Included(key))?;
         if l1_ssts_iter.is_valid() && l1_ssts_iter.key() == keyslice {
             let value = l1_ssts_iter.value();
             if !value.is_empty() {
@@ -559,32 +558,43 @@ impl LsmStorageInner {
         Ok(MergeIterator::create(sstable_iters))
     }
 
-    fn get_l1_iter(&self, lower: Bound<&[u8]>) -> Result<SstConcatIterator> {
+    fn get_ln_iter(&self, n: usize, lower: Bound<&[u8]>) -> Result<SstConcatIterator> {
         let state = self.state.read();
 
-        assert!(state.levels.len() == 1);
-        let l1_ssts = state.levels[0]
+        let ln_ssts = state.levels[n - 1]
             .1
             .iter()
             .map(|id| state.sstables.get(id).unwrap())
             .cloned()
             .collect::<Vec<_>>();
-        println!("l1_ssts: {:?}", l1_ssts);
 
         match lower {
             Bound::Included(lower) => {
-                SstConcatIterator::create_and_seek_to_key(l1_ssts, KeySlice::from_slice(lower))
+                SstConcatIterator::create_and_seek_to_key(ln_ssts, KeySlice::from_slice(lower))
             }
             Bound::Excluded(lower) => {
                 let mut iter = SstConcatIterator::create_and_seek_to_key(
-                    l1_ssts,
+                    ln_ssts,
                     KeySlice::from_slice(lower),
                 )?;
                 iter.next()?;
                 Ok(iter)
             }
-            Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(l1_ssts),
+            Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(ln_ssts),
         }
+    }
+
+    fn get_lower_sst_iter(&self, lower: Bound<&[u8]>) -> Result<MergeIterator<SstConcatIterator>> {
+        let state = self.state.read();
+
+        let lower_sst_iter: Vec<Box<SstConcatIterator>> = (1..=state.levels.len())
+            .map(|level| self.get_ln_iter(level, lower))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .map(Box::new)
+            .collect();
+
+        Ok(MergeIterator::create(lower_sst_iter))
     }
 
     /// Create an iterator over a range of keys.
@@ -596,10 +606,9 @@ impl LsmStorageInner {
         let memtable_iter = self.get_memtable_iter(lower, upper);
         let sstable_iter = self.get_l0_ssts(lower, upper)?;
         let memtable_l0_merged = TwoMergeIterator::create(memtable_iter, sstable_iter)?;
+        let lower_sst_iter = self.get_lower_sst_iter(lower)?;
 
-        let l1_iter = self.get_l1_iter(lower)?;
-
-        let lsm_iter = TwoMergeIterator::create(memtable_l0_merged, l1_iter)?;
+        let lsm_iter = TwoMergeIterator::create(memtable_l0_merged, lower_sst_iter)?;
         Ok(FusedIterator::new(LsmIterator::new(
             lsm_iter,
             map_bound(upper),

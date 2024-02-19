@@ -70,7 +70,7 @@ impl SimpleLeveledCompactionController {
     }
 
     // `level = n` -> Ln
-    fn get_level_sst_ids<'a>(snapshot: &'a LsmStorageState, level: usize) -> &'a Vec<usize> {
+    fn get_level_sst_ids(snapshot: &LsmStorageState, level: usize) -> &Vec<usize> {
         if level == 0 {
             return &snapshot.l0_sstables;
         }
@@ -86,7 +86,7 @@ impl SimpleLeveledCompactionController {
         level == snapshot.levels.len()
     }
 
-    // For L0, consider l0_file_num and size_ratio
+    // For L0, check l0_file_num
     // For L1..Ln, consider size_ratio
     fn should_compact(
         &self,
@@ -94,20 +94,17 @@ impl SimpleLeveledCompactionController {
         upper_level_size: usize,
         lower_level_size: usize,
     ) -> bool {
+        if upper_level == 0 {
+            return upper_level_size >= self.options.level0_file_num_compaction_trigger;
+        }
+
         let size_ratio = if upper_level_size == 0 {
             self.options.size_ratio_percent
         } else {
             lower_level_size / upper_level_size
         };
 
-        let size_ratio_trigger = size_ratio * 100 < self.options.size_ratio_percent;
-
-        if upper_level == 0 {
-            return upper_level_size >= self.options.level0_file_num_compaction_trigger
-                && size_ratio_trigger;
-        }
-
-        size_ratio_trigger
+        size_ratio * 100 < self.options.size_ratio_percent
     }
 
     /// Apply the compaction result.
