@@ -59,7 +59,7 @@ impl LeveledCompactionController {
             let lower_level_idx = target_sizes.iter().position(|size| *size > 0).unwrap();
             let lower_level = snapshot.levels[lower_level_idx].0;
             let lower_level_sst_ids = snapshot.levels[lower_level_idx].1.clone();
-            let is_lower_level_bottom_level = lower_level_idx == num_levels;
+            let is_lower_level_bottom_level = lower_level_idx + 1 == num_levels;
 
             return Some(LeveledCompactionTask {
                 upper_level: None,
@@ -95,8 +95,8 @@ impl LeveledCompactionController {
                     .filter(|sst_id| {
                         let sst = snapshot.sstables.get(sst_id).unwrap().clone();
 
-                        !(sst.last_key() < oldest_upper_level_sst.first_key())
-                            && !(sst.first_key() > oldest_upper_level_sst.last_key())
+                        (sst.last_key() >= oldest_upper_level_sst.first_key())
+                            && (sst.first_key() <= oldest_upper_level_sst.last_key())
                     })
                     .collect();
 
@@ -143,7 +143,7 @@ impl LeveledCompactionController {
         }
 
         // last_level_size > base_level_size
-        let mut level_below_base = false;
+        let mut size_below_base_added = false;
         let mut target_sizes = (1..=snapshot.levels.len())
             .rev()
             .map(|level| {
@@ -153,13 +153,11 @@ impl LeveledCompactionController {
 
                 if size > base_level_size {
                     size
+                } else if !size_below_base_added {
+                    size_below_base_added = true;
+                    size
                 } else {
-                    if !level_below_base {
-                        level_below_base = true;
-                        size
-                    } else {
-                        0
-                    }
+                    0
                 }
             })
             .collect::<Vec<_>>();
@@ -199,16 +197,7 @@ impl LeveledCompactionController {
             .max_by(|(_, p1), (_, p2)| p1.total_cmp(p2))
             .map(|(idx, _)| idx);
 
-        match highest_priority_idx {
-            None => None,
-            Some(idx) => {
-                if priorities[idx] > 1. {
-                    Some(idx)
-                } else {
-                    None
-                }
-            }
-        }
+        highest_priority_idx.filter(|&idx| priorities[idx] > 1.)
     }
 
     pub fn apply_compaction_result(
@@ -220,17 +209,20 @@ impl LeveledCompactionController {
         let mut new_state = snapshot.clone();
         let mut ssts_to_remove;
 
+        println!("Compaction task: {:?}, snapshot: {:?}", task, snapshot);
+
         // Remove task.upper_level_sst_ids, task.lower_level_sst_ids
         // Add output
         match task.upper_level {
             None => {
-                assert_eq!(&task.upper_level_sst_ids, &snapshot.l0_sstables);
-
                 let (lower_level_idx, (_, lower_level_sst_ids)) =
                     Self::get_level(snapshot, task.lower_level);
                 assert_eq!(&task.lower_level_sst_ids, lower_level_sst_ids);
 
-                new_state.l0_sstables.clear();
+                for sst_id in task.upper_level_sst_ids.iter().rev() {
+                    let removed_sst_id = new_state.l0_sstables.pop().unwrap();
+                    assert_eq!(removed_sst_id, *sst_id);
+                }
                 new_state.levels[lower_level_idx].1.clear();
                 new_state.levels[lower_level_idx].1 = output.to_vec();
 
@@ -252,10 +244,36 @@ impl LeveledCompactionController {
                     let new_lower_level = &mut new_state.levels[lower_level_idx].1;
                     new_lower_level.clear();
 
-                    let get_sst = |sst_id| snapshot.sstables.get(sst_id).unwrap().clone();
+                    let get_sst = |sst_id| {
+                        snapshot
+                            .sstables
+                            .get(sst_id)
+                            .unwrap_or_else(|| panic!("{:?} not found", sst_id))
+                            .clone()
+                    };
 
-                    let output_min_key = get_sst(&output[0]).first_key().clone();
-                    let output_max_key = get_sst(&output[output.len() - 1]).last_key().clone();
+                    let (output_min_key, output_max_key) = {
+                        let upper_level_sst = get_sst(&task.upper_level_sst_ids[0]).clone();
+                        let mut min_key = upper_level_sst.first_key().clone();
+                        let mut max_key = upper_level_sst.last_key().clone();
+
+                        if !task.lower_level_sst_ids.is_empty() {
+                            let lower_level_first_sst =
+                                get_sst(&task.lower_level_sst_ids[0]).clone();
+                            let lower_level_last_sst = get_sst(
+                                &task.lower_level_sst_ids[task.lower_level_sst_ids.len() - 1],
+                            )
+                            .clone();
+
+                            let lower_level_min_key = lower_level_first_sst.first_key().clone();
+                            let lower_level_max_key = lower_level_last_sst.last_key().clone();
+
+                            min_key = min_key.min(lower_level_min_key);
+                            max_key = max_key.max(lower_level_max_key);
+                        }
+
+                        (min_key, max_key)
+                    };
 
                     let mut idx = 0;
 

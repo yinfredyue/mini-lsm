@@ -221,12 +221,11 @@ impl std::fmt::Debug for MemTable {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "MemTable[id={:?}, map={:?}]",
+            "MemTable[id={:?}, map=[min_key={:?}, max_key={:?}, num_keys={:?}]]",
             self.id,
-            self.map
-                .iter()
-                .map(|x| (x.key().clone(), x.value().clone()))
-                .collect::<Vec<_>>()
+            self.map.front(),
+            self.map.back(),
+            self.map.len(),
         )
     }
 }

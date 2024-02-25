@@ -111,7 +111,7 @@ pub enum CompactionOptions {
 impl LsmStorageInner {
     fn compact(&self, task: &CompactionTask) -> Result<Vec<Arc<SsTable>>> {
         match task {
-            CompactionTask::Leveled(_) => todo!(),
+            CompactionTask::Leveled(task) => self.leveled_compaction(task),
             CompactionTask::Tiered(task) => self.tiered_compaction(task),
             CompactionTask::Simple(task) => self.simple_compaction(task),
             CompactionTask::ForceFullCompaction {
@@ -119,6 +119,20 @@ impl LsmStorageInner {
                 l1_sstables,
             } => self.full_compactation([l0_sstables.clone(), l1_sstables.clone()].concat()),
         }
+    }
+
+    fn leveled_compaction(&self, task: &LeveledCompactionTask) -> Result<Vec<Arc<SsTable>>> {
+        let guard = self.state.read();
+
+        let ssts: Vec<Arc<SsTable>> = task
+            .upper_level_sst_ids
+            .iter()
+            .chain(task.lower_level_sst_ids.iter())
+            .map(|sst_id| guard.sstables.get(sst_id).unwrap())
+            .cloned()
+            .collect();
+
+        self.create_sorted_run(ssts)
     }
 
     fn tiered_compaction(&self, task: &TieredCompactionTask) -> Result<Vec<Arc<SsTable>>> {
@@ -131,7 +145,7 @@ impl LsmStorageInner {
             .cloned()
             .collect();
 
-        self.full_compaction_core(ssts)
+        self.create_sorted_run(ssts)
     }
 
     fn simple_compaction(&self, task: &SimpleLeveledCompactionTask) -> Result<Vec<Arc<SsTable>>> {
@@ -147,7 +161,7 @@ impl LsmStorageInner {
         .cloned()
         .collect();
 
-        self.full_compaction_core(ssts)
+        self.create_sorted_run(ssts)
     }
 
     pub fn force_full_compaction(&self) -> Result<()> {
@@ -225,10 +239,10 @@ impl LsmStorageInner {
             .map(|res| res.cloned())
             .collect::<Result<Vec<_>>>()?;
 
-        self.full_compaction_core(sstables)
+        self.create_sorted_run(sstables)
     }
 
-    fn full_compaction_core(&self, ssts: Vec<Arc<SsTable>>) -> Result<Vec<Arc<SsTable>>> {
+    fn create_sorted_run(&self, ssts: Vec<Arc<SsTable>>) -> Result<Vec<Arc<SsTable>>> {
         let sstable_iters = ssts
             .into_iter()
             .map(SsTableIterator::create_and_seek_to_first)
@@ -239,7 +253,7 @@ impl LsmStorageInner {
 
         let mut sorted_run = Vec::new();
 
-        // Build a new SSTable from `builder` and add to `new_l1_sstables`
+        // Build a new SSTable from `builder` and add to `sorted_run`
         let mut build_sst = |builder: SsTableBuilder| -> Result<()> {
             let sst_id = self.next_sst_id();
             let sst = builder.build(
@@ -256,9 +270,11 @@ impl LsmStorageInner {
 
             // Iterate over merged iterator
             let mut merged_iter = MergeIterator::create(sstable_iters);
+            let mut data_remaining = false;
             while merged_iter.is_valid() {
                 if !merged_iter.value().is_empty() {
                     builder.add(merged_iter.key(), merged_iter.value());
+                    data_remaining = true;
 
                     if builder.estimated_size() > self.options.target_sst_size {
                         let full_builder = std::mem::replace(
@@ -266,6 +282,7 @@ impl LsmStorageInner {
                             SsTableBuilder::new(self.options.block_size),
                         );
                         build_sst(full_builder)?;
+                        data_remaining = false;
                     }
                 }
 
@@ -273,7 +290,9 @@ impl LsmStorageInner {
             }
 
             // Add any remaining data
-            build_sst(builder)?;
+            if data_remaining {
+                build_sst(builder)?;
+            }
         }
 
         Ok(sorted_run)
