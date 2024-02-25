@@ -26,6 +26,7 @@ pub struct LeveledCompactionController {
 
 impl LeveledCompactionController {
     pub fn new(options: LeveledCompactionOptions) -> Self {
+        println!("{:?}", options);
         Self { options }
     }
 
@@ -40,17 +41,259 @@ impl LeveledCompactionController {
 
     pub fn generate_compaction_task(
         &self,
-        _snapshot: &LsmStorageState,
+        snapshot: &LsmStorageState,
     ) -> Option<LeveledCompactionTask> {
-        unimplemented!()
+        let target_sizes = self.target_sizes(snapshot);
+        println!(
+            "target_sizes: {:?}",
+            target_sizes
+                .iter()
+                .map(|x| x / usize::pow(2, 20))
+                .collect::<Vec<_>>()
+        );
+
+        let num_levels = snapshot.levels.len();
+
+        // L0 compaction, by number of files
+        if snapshot.l0_sstables.len() >= self.options.level0_file_num_compaction_trigger {
+            let lower_level_idx = target_sizes.iter().position(|size| *size > 0).unwrap();
+            let lower_level = snapshot.levels[lower_level_idx].0;
+            let lower_level_sst_ids = snapshot.levels[lower_level_idx].1.clone();
+            let is_lower_level_bottom_level = lower_level_idx == num_levels;
+
+            return Some(LeveledCompactionTask {
+                upper_level: None,
+                upper_level_sst_ids: snapshot.l0_sstables.clone(),
+                lower_level,
+                lower_level_sst_ids,
+                is_lower_level_bottom_level,
+            });
+        }
+
+        // Lower level compaction, by priority = current_size / target_size
+        let upper_level_idx = self.highest_priority_level_to_compact(snapshot);
+
+        match upper_level_idx {
+            None => None,
+            Some(upper_level_idx) => {
+                // Select SSTs to compact
+                // Oldest SST from the upper level, and all overlapping SSTs from the lower level
+                let (upper_level, upper_level_sst_ids) = &snapshot.levels[upper_level_idx];
+                let oldest_upper_level_sst_id = upper_level_sst_ids.iter().min().unwrap();
+                let oldest_upper_level_sst = snapshot
+                    .sstables
+                    .get(oldest_upper_level_sst_id)
+                    .unwrap()
+                    .clone();
+
+                assert!(upper_level_idx != num_levels);
+                let (lower_level, lower_level_sst_ids) =
+                    snapshot.levels[upper_level_idx + 1].clone();
+
+                let overlapping_lower_level_sst_ids: Vec<usize> = lower_level_sst_ids
+                    .into_iter()
+                    .filter(|sst_id| {
+                        let sst = snapshot.sstables.get(sst_id).unwrap().clone();
+
+                        !(sst.last_key() < oldest_upper_level_sst.first_key())
+                            && !(sst.first_key() > oldest_upper_level_sst.last_key())
+                    })
+                    .collect();
+
+                println!(
+                    "upper_level: {:?}, oldest_upper_level_sst: {:?}, overlapping_lower_sst_ids: {:?}",
+                    upper_level, oldest_upper_level_sst_id, overlapping_lower_level_sst_ids
+                );
+
+                let is_lower_level_bottom_level = upper_level + 1 == num_levels - 1;
+
+                Some(LeveledCompactionTask {
+                    upper_level: Some(*upper_level),
+                    upper_level_sst_ids: vec![*oldest_upper_level_sst_id],
+                    lower_level,
+                    lower_level_sst_ids: overlapping_lower_level_sst_ids,
+                    is_lower_level_bottom_level,
+                })
+            }
+        }
+    }
+
+    fn last_level_size(snapshot: &LsmStorageState) -> usize {
+        let last_level = &snapshot.levels.last().unwrap().1;
+
+        last_level
+            .iter()
+            .map(|sst_id| snapshot.sstables.get(sst_id).unwrap().table_size() as usize)
+            .sum()
+    }
+
+    // In bytes, not mb
+    fn target_sizes(&self, snapshot: &LsmStorageState) -> Vec<usize> {
+        let num_levels = snapshot.levels.len();
+        let base_level_size = self.options.base_level_size_mb * usize::pow(2, 20);
+        let last_level_size = Self::last_level_size(snapshot);
+        println!("Last_level_size: {:?}", last_level_size / usize::pow(2, 20));
+
+        // last_level_size <= base_level_size
+        // Don't create new levels, just add to the bottom level
+        if last_level_size <= base_level_size {
+            let mut res = vec![0; num_levels];
+            res[num_levels - 1] = base_level_size;
+            return res;
+        }
+
+        // last_level_size > base_level_size
+        let mut level_below_base = false;
+        let mut target_sizes = (1..=snapshot.levels.len())
+            .rev()
+            .map(|level| {
+                let exponent = (num_levels - level) as u32;
+                let multipler = self.options.level_size_multiplier.pow(exponent);
+                let size = last_level_size / multipler;
+
+                if size > base_level_size {
+                    size
+                } else {
+                    if !level_below_base {
+                        level_below_base = true;
+                        size
+                    } else {
+                        0
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+
+        target_sizes.reverse();
+        target_sizes
+    }
+
+    fn highest_priority_level_to_compact(&self, snapshot: &LsmStorageState) -> Option<usize> {
+        let target_sizes = self.target_sizes(snapshot);
+        let current_sizes: Vec<usize> = snapshot
+            .levels
+            .iter()
+            .map(|(_, sst_ids)| {
+                sst_ids
+                    .iter()
+                    .map(|sst_id| snapshot.sstables.get(sst_id).unwrap().table_size() as usize)
+                    .sum()
+            })
+            .collect();
+        let priorities: Vec<f32> = target_sizes
+            .iter()
+            .zip(current_sizes.iter())
+            .map(|(target, current)| {
+                if *target == 0 {
+                    0. // To avoid NaN
+                } else {
+                    *current as f32 / (*target as f32)
+                }
+            })
+            .collect();
+        println!("Priorities: {:?}", priorities);
+
+        let highest_priority_idx = priorities
+            .iter()
+            .enumerate()
+            .max_by(|(_, p1), (_, p2)| p1.total_cmp(p2))
+            .map(|(idx, _)| idx);
+
+        match highest_priority_idx {
+            None => None,
+            Some(idx) => {
+                if priorities[idx] > 1. {
+                    Some(idx)
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     pub fn apply_compaction_result(
         &self,
-        _snapshot: &LsmStorageState,
-        _task: &LeveledCompactionTask,
-        _output: &[usize],
+        snapshot: &LsmStorageState,
+        task: &LeveledCompactionTask,
+        output: &[usize],
     ) -> (LsmStorageState, Vec<usize>) {
-        unimplemented!()
+        let mut new_state = snapshot.clone();
+        let mut ssts_to_remove;
+
+        // Remove task.upper_level_sst_ids, task.lower_level_sst_ids
+        // Add output
+        match task.upper_level {
+            None => {
+                assert_eq!(&task.upper_level_sst_ids, &snapshot.l0_sstables);
+
+                let (lower_level_idx, (_, lower_level_sst_ids)) =
+                    Self::get_level(snapshot, task.lower_level);
+                assert_eq!(&task.lower_level_sst_ids, lower_level_sst_ids);
+
+                new_state.l0_sstables.clear();
+                new_state.levels[lower_level_idx].1.clear();
+                new_state.levels[lower_level_idx].1 = output.to_vec();
+
+                ssts_to_remove = task.upper_level_sst_ids.clone();
+                ssts_to_remove.append(&mut task.lower_level_sst_ids.clone());
+            }
+            Some(upper_level) => {
+                let (upper_level_idx, _) = Self::get_level(snapshot, upper_level);
+                let (lower_level_idx, (_, lower_level_sst_ids)) =
+                    Self::get_level(snapshot, task.lower_level);
+
+                assert_eq!(task.upper_level_sst_ids.len(), 1);
+
+                new_state.levels[upper_level_idx]
+                    .1
+                    .retain(|x| *x != task.upper_level_sst_ids[0]);
+
+                {
+                    let new_lower_level = &mut new_state.levels[lower_level_idx].1;
+                    new_lower_level.clear();
+
+                    let get_sst = |sst_id| snapshot.sstables.get(sst_id).unwrap().clone();
+
+                    let output_min_key = get_sst(&output[0]).first_key().clone();
+                    let output_max_key = get_sst(&output[output.len() - 1]).last_key().clone();
+
+                    let mut idx = 0;
+
+                    // Non-overlapping prefix
+                    while idx < lower_level_sst_ids.len()
+                        && get_sst(&lower_level_sst_ids[idx]).last_key() < &output_min_key
+                    {
+                        new_lower_level.push(lower_level_sst_ids[idx]);
+                        idx += 1;
+                    }
+
+                    // Overlapping
+                    new_lower_level.extend_from_slice(output);
+                    while idx < lower_level_sst_ids.len()
+                        && get_sst(&lower_level_sst_ids[idx]).first_key() <= &output_max_key
+                    {
+                        idx += 1;
+                    }
+
+                    // Non-overlapping suffix
+                    new_lower_level.extend_from_slice(&lower_level_sst_ids[idx..]);
+                }
+
+                ssts_to_remove = vec![task.upper_level_sst_ids[0]];
+                ssts_to_remove.append(&mut task.lower_level_sst_ids.clone());
+            }
+        };
+
+        (new_state, ssts_to_remove)
+    }
+
+    fn get_level(snapshot: &LsmStorageState, level_id: usize) -> (usize, &(usize, Vec<usize>)) {
+        let pos = snapshot
+            .levels
+            .iter()
+            .position(|level| level.0 == level_id)
+            .unwrap();
+
+        (pos, &snapshot.levels[pos])
     }
 }

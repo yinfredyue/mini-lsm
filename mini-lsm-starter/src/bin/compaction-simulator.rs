@@ -188,6 +188,11 @@ impl MockStorage {
 fn generate_random_key_range() -> (KeyBytes, KeyBytes) {
     use rand::Rng;
     let mut rng = rand::thread_rng();
+
+    // Uncomment to get rid of randomness
+    // use rand::SeedableRng;
+    // let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
     let begin: usize = rng.gen_range(0..(1 << 31));
     let end: usize = begin + rng.gen_range((1 << 10)..(1 << 31));
     let mut begin_bytes = BytesMut::new();
