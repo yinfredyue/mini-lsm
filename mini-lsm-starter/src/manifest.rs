@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use parking_lot::{Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 

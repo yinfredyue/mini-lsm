@@ -38,6 +38,7 @@ pub(crate) fn map_bound(bound: Bound<&[u8]>) -> Bound<Bytes> {
 impl MemTable {
     /// Create a new mem-table.
     pub fn create(id: usize) -> Self {
+        println!("MemTable::create(id={})", id);
         Self {
             map: Arc::new(SkipMap::new()),
             wal: None,
@@ -60,6 +61,7 @@ impl MemTable {
 
     /// Create a memtable from WAL
     pub fn recover_from_wal(id: usize, path: impl AsRef<Path>) -> Result<Self> {
+        println!("MemTable::recover_from_wal(id={})", id);
         let skiplist: SkipMap<Bytes, Bytes> = SkipMap::new();
         let wal = Wal::recover(path, &skiplist)?;
 
@@ -104,6 +106,11 @@ impl MemTable {
 
         self.map
             .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
+
+        if let Some(wal) = &self.wal {
+            wal.put(key, value)?;
+        }
+
         Ok(())
     }
 
