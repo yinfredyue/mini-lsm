@@ -18,6 +18,7 @@ pub use tiered::{TieredCompactionController, TieredCompactionOptions, TieredComp
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::StorageIterator;
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -337,6 +338,14 @@ impl LsmStorageInner {
         for sst in ssts_to_remove {
             std::fs::remove_file(self.path_of_sst(sst))?;
         }
+
+        // Sync directory
+        // Write to manifest and sync
+        self.sync_dir()?;
+        let manifest_record = ManifestRecord::Compaction(task, sorted_run_sst_ids.clone());
+        if let Some(manifest) = &self.manifest {
+            manifest.add_record(&self.state_lock.lock(), manifest_record)?;
+        };
 
         Ok(())
     }

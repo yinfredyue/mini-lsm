@@ -87,7 +87,9 @@ impl SsTableBuilder {
         block_cache: Option<Arc<BlockCache>>,
         path: impl AsRef<Path>,
     ) -> Result<SsTable> {
-        self.build_block();
+        if !self.builder.is_empty() {
+            self.build_block();
+        }
 
         let mut data_section = self.data;
         let mut meta_section = Vec::new();
