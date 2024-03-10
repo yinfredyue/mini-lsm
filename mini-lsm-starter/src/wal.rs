@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use crossbeam_skiplist::SkipMap;
 use parking_lot::Mutex;
 
@@ -35,36 +35,20 @@ impl Wal {
 
         let mut buf = Vec::new();
         File::open(path)?.read_to_end(&mut buf)?;
+        let mut buf = &buf[..];
 
-        {
-            let mut curr = 0;
-            loop {
-                if curr >= buf.len() {
-                    break;
-                }
+        while buf.has_remaining() {
+            let key_len = buf.get_u16() as usize;
 
-                let key_len = u16::from_be_bytes([buf[curr], buf[curr + 1]]) as usize;
-                curr += 2;
+            let key = Bytes::copy_from_slice(&buf[..key_len]);
+            buf.advance(key_len);
 
-                let key = Bytes::copy_from_slice(&buf[curr..curr + key_len]);
-                curr += key_len;
+            let value_len = buf.get_u16() as usize;
 
-                let value_len = u16::from_be_bytes([buf[curr], buf[curr + 1]]) as usize;
-                curr += 2;
+            let value = Bytes::copy_from_slice(&buf[..value_len]);
+            buf.advance(value_len);
 
-                let value = Bytes::copy_from_slice(&buf[curr..curr + value_len]);
-                curr += value_len;
-
-                println!(
-                    "key_len: {}, key: {}, value_len: {}, value: {}",
-                    key_len,
-                    String::from_utf8(key.to_vec()).unwrap(),
-                    value_len,
-                    String::from_utf8(value.to_vec()).unwrap(),
-                );
-
-                skiplist.insert(key, value);
-            }
+            skiplist.insert(key, value);
         }
 
         Ok(wal)
