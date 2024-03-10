@@ -30,19 +30,25 @@ pub struct BlockMeta {
     pub last_key: KeyBytes,
 }
 
+// With ts:
+// | first_key_len | last_key_len | offset | first_key_ts | first_key | last_key_ts | last_key
 impl BlockMeta {
     fn encode_one(block_meta: &BlockMeta) -> Vec<u8> {
         let mut buf = Vec::new();
 
-        let first_key_len = block_meta.first_key.len() as u16;
+        let first_key_len = block_meta.first_key.key_len() as u16;
         buf.append(&mut first_key_len.to_be_bytes().to_vec());
 
-        let last_key_len = block_meta.last_key.len() as u16;
+        let last_key_len = block_meta.last_key.key_len() as u16;
         buf.append(&mut last_key_len.to_be_bytes().to_vec());
 
         buf.append(&mut (block_meta.offset as u32).to_be_bytes().to_vec());
-        buf.append(&mut block_meta.first_key.raw_ref().to_vec());
-        buf.append(&mut block_meta.last_key.raw_ref().to_vec());
+
+        buf.append(&mut block_meta.first_key.ts().to_be_bytes().to_vec());
+        buf.append(&mut block_meta.first_key.key_ref().to_vec());
+
+        buf.append(&mut block_meta.last_key.ts().to_be_bytes().to_vec());
+        buf.append(&mut block_meta.last_key.key_ref().to_vec());
 
         buf
     }
@@ -52,8 +58,14 @@ impl BlockMeta {
         let last_key_len = buf.get_u16();
 
         let offset = buf.get_u32() as usize;
-        let first_key = KeyBytes::from_bytes(buf.copy_to_bytes(first_key_len as usize));
-        let last_key = KeyBytes::from_bytes(buf.copy_to_bytes(last_key_len as usize));
+
+        let first_key_ts = buf.get_u64();
+        let first_key =
+            KeyBytes::from_bytes_with_ts(buf.copy_to_bytes(first_key_len as usize), first_key_ts);
+
+        let last_key_ts = buf.get_u64();
+        let last_key =
+            KeyBytes::from_bytes_with_ts(buf.copy_to_bytes(last_key_len as usize), last_key_ts);
 
         BlockMeta {
             offset,
@@ -71,11 +83,7 @@ impl BlockMeta {
     /// For each meta block:
     /// | first_key_len | last_key_len | offset (u32) | first_key | last_key |
     /// All numbers are u16 except for offset
-    pub fn encode_block_meta(
-        block_meta: &[BlockMeta],
-        #[allow(clippy::ptr_arg)] // remove this allow after you finish
-        buf: &mut Vec<u8>,
-    ) {
+    pub fn encode_block_meta(block_meta: &[BlockMeta], buf: &mut Vec<u8>) {
         let num_metas = block_meta.len() as u16;
         buf.append(&mut num_metas.to_be_bytes().to_vec());
 
@@ -89,6 +97,7 @@ impl BlockMeta {
         let mut metas = Vec::new();
 
         let num_metas = buf.get_u16();
+        println!("num_metas: {:?}", num_metas);
         for _ in 0..num_metas {
             let meta = Self::decode_one(&mut buf);
             metas.push(meta);
@@ -157,6 +166,11 @@ impl SsTable {
     }
 
     /// Open SSTable from a file.
+    /// -------------------------------------------------------------------------------------------
+    /// |         Block Section         |          Meta Section         |          Extra          |
+    /// -------------------------------------------------------------------------------------------
+    /// | data block | ... | data block |            metadata           | meta block offset (u32) |
+    /// -------------------------------------------------------------------------------------------
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
         let filesize = file.1;
 

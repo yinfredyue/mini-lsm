@@ -20,8 +20,22 @@ pub struct BlockIterator {
 
 fn decode_entry(data: Vec<u8>, start_offset: usize) -> (KeyVec, (usize, usize)) {
     let key_len = u16::from_be_bytes([data[0], data[1]]) as usize;
-    let key = KeyVec::from_vec(data[2..(key_len + 2)].to_vec());
-    let value_range = (start_offset + key_len + 4, start_offset + data.len());
+    let raw_key = data[2..(key_len + 2)].to_vec();
+    let ts = u64::from_be_bytes([
+        data[key_len + 2],
+        data[key_len + 3],
+        data[key_len + 4],
+        data[key_len + 5],
+        data[key_len + 6],
+        data[key_len + 7],
+        data[key_len + 8],
+        data[key_len + 9],
+    ]);
+    let key = KeyVec::from_vec_with_ts(raw_key, ts);
+    let value_range = (
+        start_offset + 2 /* key_len */ + key_len /* key */ + 8 /* ts */ + 2, /* value_len */
+        start_offset + data.len(),
+    );
 
     (key, value_range)
 }

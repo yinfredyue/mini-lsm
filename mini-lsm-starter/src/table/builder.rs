@@ -2,7 +2,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use bytes::Bytes;
 
 use super::{BlockMeta, SsTable};
 use crate::key::KeyBytes;
@@ -12,8 +11,8 @@ use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
     builder: BlockBuilder,
-    first_key: Vec<u8>,
-    last_key: Vec<u8>,
+    first_key: KeyBytes,
+    last_key: KeyBytes,
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
@@ -24,8 +23,8 @@ impl SsTableBuilder {
     pub fn new(block_size: usize) -> Self {
         Self {
             builder: BlockBuilder::new(block_size),
-            first_key: Vec::new(),
-            last_key: Vec::new(),
+            first_key: KeyBytes::new(),
+            last_key: KeyBytes::new(),
             data: Vec::new(),
             meta: Vec::new(),
             block_size,
@@ -40,9 +39,8 @@ impl SsTableBuilder {
         // update data, meta
         let block = full_builder.build();
 
-        let block_first_key =
-            KeyBytes::from_bytes(Bytes::from(std::mem::take(&mut self.first_key)));
-        let block_last_key = KeyBytes::from_bytes(Bytes::from(std::mem::take(&mut self.last_key)));
+        let block_first_key = std::mem::take(&mut self.first_key);
+        let block_last_key = std::mem::take(&mut self.last_key);
         let block_meta = BlockMeta {
             offset: self.data.len(),
             first_key: block_first_key,
@@ -64,11 +62,11 @@ impl SsTableBuilder {
             assert!(self.builder.add(key, value));
         }
 
-        if self.first_key.is_empty() || KeySlice::from_slice(&self.first_key) > key {
-            self.first_key = key.into_inner().to_vec();
+        if self.first_key.is_empty() || self.first_key.as_key_slice() > key {
+            self.first_key = key.to_key_vec().into_key_bytes();
         }
-        if self.last_key.is_empty() || KeySlice::from_slice(&self.last_key) < key {
-            self.last_key = key.into_inner().to_vec();
+        if self.last_key.is_empty() || self.last_key.as_key_slice() < key {
+            self.last_key = key.to_key_vec().into_key_bytes();
         }
     }
 

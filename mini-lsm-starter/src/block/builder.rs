@@ -14,8 +14,11 @@ pub struct BlockBuilder {
     first_key: KeyVec,
 }
 
-// [ key_len(2B) | key | value_len(2) | value ]. Offset (u16) takes 2 bytes.
+// Without ts:
+// [ key_len(2) | key | value_len(2) | value ]. Offset (u16) takes 2 bytes.
 // The overhead is 2 + 2 + 2 = 6 bytes per key-value pair.
+// With ts:
+// [ key_len(2) | key | timestamp | value_len(2) | value ].
 const OVERHEAD: usize = 6;
 
 impl BlockBuilder {
@@ -30,7 +33,8 @@ impl BlockBuilder {
     }
 
     fn will_exceed_size_limit(&self, key: KeySlice, value: &[u8]) -> bool {
-        self.data.len() + self.offsets.len() + key.len() + value.len() + OVERHEAD >= self.block_size
+        self.data.len() + self.offsets.len() + key.raw_len() + value.len() + OVERHEAD
+            >= self.block_size
     }
 
     /// Adds a key-value pair to the block. Returns false when the block is full.
@@ -51,12 +55,14 @@ impl BlockBuilder {
             KeyVec::set_from_slice(&mut self.first_key, key);
         }
 
-        let mut key_len = (key.len() as u16).to_be_bytes().to_vec();
-        let mut key = key.raw_ref().to_vec();
+        let mut ts = key.ts().to_be_bytes().to_vec();
+        let mut key_len = (key.key_len() as u16).to_be_bytes().to_vec();
+        let mut key = key.key_ref().to_vec();
         let mut value_len = (value.len() as u16).to_be_bytes().to_vec();
         let mut value = value.to_vec();
         self.data.append(&mut key_len);
         self.data.append(&mut key);
+        self.data.append(&mut ts);
         self.data.append(&mut value_len);
         self.data.append(&mut value);
 
