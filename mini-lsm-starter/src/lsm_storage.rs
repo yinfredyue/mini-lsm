@@ -28,6 +28,11 @@ use crate::table::{FileObject, SsTable, SsTableBuilder, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
+type AllMergedIterator = TwoMergeIterator<
+    TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>,
+    MergeIterator<SstConcatIterator>,
+>;
+
 /// Represents the state of the storage engine.
 #[derive(Clone, Debug)]
 pub struct LsmStorageState {
@@ -436,57 +441,15 @@ impl LsmStorageInner {
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         println!("get({:?})", key);
 
-        let keyslice = KeySlice::from_slice(key, TS_RANGE_BEGIN);
+        let lower = Bound::Included(key);
+        let upper = Bound::Included(key);
+        let iter = self.get_scan_iter(lower, upper)?;
 
-        // Read memtables
-        // If a key is found:
-        //   If the value is empty, return None
-        //   Otherwise, return Some(value)
-        // Otherwise, read lower levels
-        println!("Reading memtables");
-        let memtable_iter = self.get_memtable_iter(Bound::Included(key), Bound::Unbounded);
-        if memtable_iter.is_valid() && memtable_iter.key().key_ref() == keyslice.key_ref() {
-            let value = memtable_iter.value();
-            if !value.is_empty() {
-                return Ok(Some(Bytes::copy_from_slice(value)));
-            }
-
+        if !iter.is_valid() || iter.key().key_ref() != key || iter.value().is_empty() {
             return Ok(None);
         }
 
-        // Read L0 SSTs
-        // If a key is found:
-        //   If the value is empty, return None
-        //   Otherwise, return Some(value)
-        // Otherwise, read lower levels
-        println!("Reading l0");
-        let l0_ssts_iter = self.get_l0_ssts(Bound::Included(key), Bound::Unbounded)?;
-        if l0_ssts_iter.is_valid() && l0_ssts_iter.key().key_ref() == keyslice.key_ref() {
-            let value = l0_ssts_iter.value();
-            if !value.is_empty() {
-                return Ok(Some(Bytes::copy_from_slice(value)));
-            }
-
-            return Ok(None);
-        }
-
-        // Read Lower SSTs
-        // For each level, if a key is found:
-        //   If the value is empty, return None
-        //   Otherwise, return Some(value)
-        // Otherwise, read next level
-        println!("Reading lower levels");
-        let lower_ssts_iter = self.get_lower_sst_iter(Bound::Included(key))?;
-        if lower_ssts_iter.is_valid() && lower_ssts_iter.key().key_ref() == keyslice.key_ref() {
-            let value = lower_ssts_iter.value();
-            if !value.is_empty() {
-                return Ok(Some(Bytes::copy_from_slice(value)));
-            }
-
-            return Ok(None);
-        }
-
-        Ok(None)
+        Ok(Some(Bytes::copy_from_slice(iter.value())))
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
@@ -780,20 +743,28 @@ impl LsmStorageInner {
         Ok(MergeIterator::create(lower_sst_iter))
     }
 
+    fn get_scan_iter(&self, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> Result<AllMergedIterator> {
+        let memtable_iter = self.get_memtable_iter(lower, upper);
+        let l0_iter = self.get_l0_ssts(lower, upper)?;
+        let lower_sst_iter = self.get_lower_sst_iter(lower)?;
+
+        let merged = TwoMergeIterator::create(
+            TwoMergeIterator::create(memtable_iter, l0_iter)?,
+            lower_sst_iter,
+        )?;
+
+        Ok(merged)
+    }
+
     /// Create an iterator over a range of keys.
     pub fn scan(
         &self,
         lower: Bound<&[u8]>,
         upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        let memtable_iter = self.get_memtable_iter(lower, upper);
-        let sstable_iter = self.get_l0_ssts(lower, upper)?;
-        let memtable_l0_merged = TwoMergeIterator::create(memtable_iter, sstable_iter)?;
-        let lower_sst_iter = self.get_lower_sst_iter(lower)?;
-
-        let lsm_iter = TwoMergeIterator::create(memtable_l0_merged, lower_sst_iter)?;
+        let iter = self.get_scan_iter(lower, upper)?;
         Ok(FusedIterator::new(LsmIterator::new(
-            lsm_iter,
+            iter,
             map_bound(upper),
         )?))
     }
