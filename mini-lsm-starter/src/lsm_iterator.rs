@@ -32,14 +32,16 @@ pub struct LsmIterator {
     // bound.
     upper: Bound<Bytes>,
     prev_key: Option<Vec<u8>>,
+    read_ts: u64,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(iter: LsmIteratorInner, upper: Bound<Bytes>) -> Result<Self> {
+    pub(crate) fn new(iter: LsmIteratorInner, upper: Bound<Bytes>, read_ts: u64) -> Result<Self> {
         let mut iter = Self {
             inner: iter,
             upper,
             prev_key: None,
+            read_ts,
         };
 
         iter.next()?;
@@ -82,6 +84,8 @@ impl StorageIterator for LsmIterator {
                     (true, false)
                 } else if self.value().is_empty() {
                     (true, true)
+                } else if self.inner.key().ts() > self.read_ts {
+                    (true, false)
                 } else {
                     (false, true)
                 };

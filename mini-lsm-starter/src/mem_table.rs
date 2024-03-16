@@ -11,7 +11,7 @@ use crossbeam_skiplist::SkipMap;
 use ouroboros::self_referencing;
 
 use crate::iterators::StorageIterator;
-use crate::key::{KeyBytes, KeySlice, TS_DEFAULT};
+use crate::key::{KeyBytes, KeySlice, TS_DEFAULT, TS_RANGE_BEGIN, TS_RANGE_END};
 use crate::table::SsTableBuilder;
 use crate::wal::Wal;
 
@@ -26,8 +26,8 @@ pub struct MemTable {
     approximate_size: Arc<AtomicUsize>,
 }
 
-/// Create a bound of `Bytes` from a bound of `&[u8]`.
-pub(crate) fn map_bound(bound: Bound<&[u8]>) -> Bound<Bytes> {
+/// `&[u8]` -> `Bytes`
+pub(crate) fn map_bound_u8_to_bytes(bound: Bound<&[u8]>) -> Bound<Bytes> {
     match bound {
         Bound::Included(x) => Bound::Included(Bytes::copy_from_slice(x)),
         Bound::Excluded(x) => Bound::Excluded(Bytes::copy_from_slice(x)),
@@ -35,7 +35,26 @@ pub(crate) fn map_bound(bound: Bound<&[u8]>) -> Bound<Bytes> {
     }
 }
 
-pub(crate) fn map_bound_with_ts(bound: Bound<&[u8]>, ts: u64) -> Bound<KeySlice> {
+/// lower bound, `&[u8]` -> `KeySlice`
+pub(crate) fn map_lower_bound_u8_to_keyslice(lower: Bound<&[u8]>) -> Bound<KeySlice> {
+    match lower {
+        Bound::Included(x) => Bound::Included(KeySlice::from_slice(x, TS_RANGE_BEGIN)),
+        Bound::Excluded(x) => Bound::Excluded(KeySlice::from_slice(x, TS_RANGE_END)),
+        Bound::Unbounded => Bound::Unbounded,
+    }
+}
+
+/// upper bound, `&[u8]` -> `KeySlice`
+pub(crate) fn map_upper_bound_u8_to_keyslice(upper: Bound<&[u8]>) -> Bound<KeySlice> {
+    match upper {
+        Bound::Included(x) => Bound::Included(KeySlice::from_slice(x, TS_RANGE_END)),
+        Bound::Excluded(x) => Bound::Excluded(KeySlice::from_slice(x, TS_RANGE_BEGIN)),
+        Bound::Unbounded => Bound::Unbounded,
+    }
+}
+
+/// `&[u8]` + ts -> `KeySlice`
+pub(crate) fn map_bound_u8_to_keyslice_with_ts(bound: Bound<&[u8]>, ts: u64) -> Bound<KeySlice> {
     match bound {
         Bound::Included(x) => Bound::Included(KeySlice::from_slice(x, ts)),
         Bound::Excluded(x) => Bound::Excluded(KeySlice::from_slice(x, ts)),
@@ -43,7 +62,8 @@ pub(crate) fn map_bound_with_ts(bound: Bound<&[u8]>, ts: u64) -> Bound<KeySlice>
     }
 }
 
-pub(crate) fn map_keyslice_bound(bound: Bound<KeySlice>) -> Bound<KeyBytes> {
+/// `KeySlice` -> `KeyBytes`
+pub(crate) fn map_bound_keyslice_to_keybytes(bound: Bound<KeySlice>) -> Bound<KeyBytes> {
     let keyslice_to_keybytes = |key: KeySlice| key.to_key_vec().into_key_bytes();
 
     match bound {
@@ -105,8 +125,8 @@ impl MemTable {
         upper: Bound<&[u8]>,
     ) -> MemTableIterator {
         self.scan(
-            map_bound_with_ts(lower, TS_DEFAULT),
-            map_bound_with_ts(upper, TS_DEFAULT),
+            map_bound_u8_to_keyslice_with_ts(lower, TS_DEFAULT),
+            map_bound_u8_to_keyslice_with_ts(upper, TS_DEFAULT),
         )
     }
 
@@ -147,8 +167,8 @@ impl MemTable {
 
     /// Get an iterator over a range of keys.
     pub fn scan(&self, lower: Bound<KeySlice>, upper: Bound<KeySlice>) -> MemTableIterator {
-        let lower = map_keyslice_bound(lower);
-        let upper = map_keyslice_bound(upper);
+        let lower = map_bound_keyslice_to_keybytes(lower);
+        let upper = map_bound_keyslice_to_keybytes(upper);
 
         let mut iter = MemTableIteratorBuilder {
             map: self.map.clone(),
