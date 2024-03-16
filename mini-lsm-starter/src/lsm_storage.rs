@@ -3,11 +3,12 @@
 use std::collections::HashMap;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
+use crossbeam_skiplist::SkipMap;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::block::Block;
@@ -613,9 +614,15 @@ impl LsmStorageInner {
         Ok(())
     }
 
-    pub fn new_txn(&self) -> Result<Arc<Transaction>> {
+    pub fn new_txn(self: &Arc<Self>) -> Result<Arc<Transaction>> {
         // no-op
-        unimplemented!()
+        Ok(Arc::new(Transaction {
+            read_ts: TS_DEFAULT,
+            inner: Arc::clone(self),
+            local_storage: Arc::new(SkipMap::new()),
+            committed: Arc::new(AtomicBool::new(false)),
+            key_hashes: None,
+        }))
     }
 
     fn get_memtable_iter(

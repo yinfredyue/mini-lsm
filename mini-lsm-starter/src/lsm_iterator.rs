@@ -72,17 +72,27 @@ impl StorageIterator for LsmIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        // Skip if:
-        // 1. Same key as before (we have returned the latest version)
-        // 2. Value is empty (has been deleted)
         while self.inner.is_valid() {
-            if self.key() == self.prev_key.as_ref().unwrap_or(&vec![]) {
-                self.inner.next()?
-            } else if self.value().is_empty() {
+            // Skip if:
+            // 1. Same key as before (we have returned the latest version)
+            // 2. Value is empty (has been deleted)
+            // 3. The key was written after the transaction is created
+            let (should_skip, should_update_prev_key) =
+                if self.key() == self.prev_key.as_ref().unwrap_or(&vec![]) {
+                    (true, false)
+                } else if self.value().is_empty() {
+                    (true, true)
+                } else {
+                    (false, true)
+                };
+
+            if should_update_prev_key {
                 self.prev_key = Some(self.key().to_vec());
+            }
+
+            if should_skip {
                 self.inner.next()?
             } else {
-                self.prev_key = Some(self.key().to_vec());
                 break;
             }
         }
