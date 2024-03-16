@@ -19,7 +19,7 @@ use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
-use crate::key::{KeyBytes, KeySlice, TS_DEFAULT, TS_RANGE_BEGIN, TS_RANGE_END};
+use crate::key::{KeyBytes, KeySlice, TS_DEFAULT, TS_RANGE_END};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::{Manifest, ManifestRecord};
 use crate::mem_table::{
@@ -397,7 +397,7 @@ impl LsmStorageInner {
             }
         }
 
-        // Set next_sst_id
+        // Restore existing max sst_id
         let existing_max_sst_id = vec![
             state.memtable.id(),
             state
@@ -412,6 +412,39 @@ impl LsmStorageInner {
         .max()
         .unwrap_or(0);
 
+        // Restore existing max_ts
+        let existing_max_ts = {
+            // `state.memtable` is restored from WAL if `options.enable_wal`
+            let max_ts_from_memtables = {
+                let mut max_ts = TS_DEFAULT;
+
+                let mut all_memtables = state.imm_memtables.clone();
+                all_memtables.insert(0, state.memtable.clone());
+                for tbl in all_memtables {
+                    let mut iter = tbl.scan(Bound::Unbounded, Bound::Unbounded);
+                    while iter.is_valid() {
+                        max_ts = max_ts.max(iter.key().ts());
+                        iter.next()?;
+                    }
+                }
+
+                max_ts
+            };
+
+            let max_ts_from_ssts = state
+                .sstables
+                .values()
+                .map(|sst| sst.max_ts())
+                .max()
+                .unwrap_or(TS_DEFAULT);
+
+            println!(
+                "max_ts_from_memtables: {}, max_ts_from_ssts: {}",
+                max_ts_from_memtables, max_ts_from_ssts
+            );
+            max_ts_from_memtables.max(max_ts_from_ssts)
+        };
+
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
             state_lock: Mutex::new(()),
@@ -421,7 +454,7 @@ impl LsmStorageInner {
             compaction_controller,
             manifest: Some(manifest),
             options: options.into(),
-            mvcc: Some(LsmMvccInner::new(TS_DEFAULT)),
+            mvcc: Some(LsmMvccInner::new(existing_max_ts + 1)),
             compaction_filters: Arc::new(Mutex::new(Vec::new())),
         };
 
@@ -438,9 +471,10 @@ impl LsmStorageInner {
     }
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
-    pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
+    pub fn get(self: &Arc<Self>, key: &[u8]) -> Result<Option<Bytes>> {
         println!("get({:?})", key);
-        self.get_with_ts(key, TS_RANGE_BEGIN)
+        let txn = self.new_txn()?;
+        txn.get(key)
     }
 
     pub fn get_with_ts(&self, key: &[u8], read_ts: u64) -> Result<Option<Bytes>> {
