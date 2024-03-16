@@ -16,6 +16,7 @@ pub struct SsTableBuilder {
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
+    max_ts: u64,
 }
 
 impl SsTableBuilder {
@@ -28,6 +29,7 @@ impl SsTableBuilder {
             data: Vec::new(),
             meta: Vec::new(),
             block_size,
+            max_ts: 0,
         }
     }
 
@@ -68,6 +70,7 @@ impl SsTableBuilder {
         if self.last_key.is_empty() || self.last_key.as_key_slice() < key {
             self.last_key = key.to_key_vec().into_key_bytes();
         }
+        self.max_ts = self.max_ts.max(key.ts());
     }
 
     /// Get the estimated size of the SSTable.
@@ -97,6 +100,7 @@ impl SsTableBuilder {
         let mut res = Vec::new();
         res.append(&mut data_section);
         res.append(&mut meta_section);
+        res.append(&mut self.max_ts.to_be_bytes().to_vec());
         res.append(&mut (block_meta_offset as u32).to_be_bytes().to_vec());
 
         let file = FileObject::create(path.as_ref(), res)?;
@@ -124,7 +128,7 @@ impl SsTableBuilder {
             first_key: table_first_key,
             last_key: table_last_key,
             bloom: None,
-            max_ts: 0,
+            max_ts: self.max_ts,
         })
     }
 

@@ -175,8 +175,12 @@ impl SsTable {
         let filesize = file.1;
 
         // read meta block offset
-        let block_meta_offset_bytes: [u8; 4] = file.read(filesize - 4, 4)?.try_into().unwrap();
+        let block_meta_offset_bytes: [u8; 4] = file.read(filesize - 4, 4)?.as_slice().try_into()?;
         let block_meta_offset = u32::from_be_bytes(block_meta_offset_bytes) as u64;
+
+        // read max ts
+        let max_ts_bytes: [u8; 8] = file.read(filesize - 4 - 8, 8)?.as_slice().try_into()?;
+        let max_ts = u64::from_be_bytes(max_ts_bytes);
 
         // read meta blocks
         let block_meta_num_bytes = filesize - block_meta_offset - 4;
@@ -196,7 +200,7 @@ impl SsTable {
             first_key,
             last_key,
             bloom: None,
-            max_ts: 0,
+            max_ts,
         })
     }
 
