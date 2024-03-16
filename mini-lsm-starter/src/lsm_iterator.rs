@@ -31,17 +31,19 @@ pub struct LsmIterator {
     // supports scan(lower, upper). Thus, LsmIterator has to handle the upper
     // bound.
     upper: Bound<Bytes>,
+    prev_key: Option<Vec<u8>>,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(mut iter: LsmIteratorInner, upper: Bound<Bytes>) -> Result<Self> {
-        while iter.is_valid() && iter.value().is_empty() {
-            // A deletion
-            println!("{:?} was deleted, continue", iter.key());
-            iter.next()?;
-        }
+    pub(crate) fn new(iter: LsmIteratorInner, upper: Bound<Bytes>) -> Result<Self> {
+        let mut iter = Self {
+            inner: iter,
+            upper,
+            prev_key: None,
+        };
 
-        Ok(Self { inner: iter, upper })
+        iter.next()?;
+        Ok(iter)
     }
 
     // Returns if the iterator has crossed `upper` and thus is not valid
@@ -70,16 +72,19 @@ impl StorageIterator for LsmIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        if !self.inner.is_valid() {
-            return Err(anyhow!("next() called on invalid LsmIterator"));
-        }
-
-        self.inner.next()?;
-
-        while self.inner.is_valid() && self.value().is_empty() {
-            // A deletion
-            println!("{:?} was deleted, continue", self.key());
-            self.inner.next()?;
+        // Skip if:
+        // 1. Same key as before (we have returned the latest version)
+        // 2. Value is empty (has been deleted)
+        while self.inner.is_valid() {
+            if self.key() == self.prev_key.as_ref().unwrap_or(&vec![]) {
+                self.inner.next()?
+            } else if self.value().is_empty() {
+                self.prev_key = Some(self.key().to_vec());
+                self.inner.next()?
+            } else {
+                self.prev_key = Some(self.key().to_vec());
+                break;
+            }
         }
 
         Ok(())

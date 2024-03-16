@@ -17,6 +17,7 @@ pub use tiered::{TieredCompactionController, TieredCompactionOptions, TieredComp
 
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::StorageIterator;
+use crate::key::KeyVec;
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
 use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
@@ -272,21 +273,29 @@ impl LsmStorageInner {
             // Iterate over merged iterator
             let mut merged_iter = MergeIterator::create(sstable_iters);
             let mut data_remaining = false;
-            while merged_iter.is_valid() {
-                if !merged_iter.value().is_empty() {
-                    builder.add(merged_iter.key(), merged_iter.value());
-                    data_remaining = true;
 
-                    if builder.estimated_size() > self.options.target_sst_size {
-                        let full_builder = std::mem::replace(
-                            &mut builder,
-                            SsTableBuilder::new(self.options.block_size),
-                        );
-                        build_sst(full_builder)?;
-                        data_remaining = false;
-                    }
+            // Put different versions of the same key in the same SST
+            let mut prev_key: Option<KeyVec> = None;
+            while merged_iter.is_valid() {
+                builder.add(merged_iter.key(), merged_iter.value());
+                data_remaining = true;
+
+                let is_same_key = if let Some(prev_key) = prev_key {
+                    prev_key.as_key_slice().key_ref() == merged_iter.key().key_ref()
+                } else {
+                    false
+                };
+
+                if !is_same_key && builder.estimated_size() > self.options.target_sst_size {
+                    let full_builder = std::mem::replace(
+                        &mut builder,
+                        SsTableBuilder::new(self.options.block_size),
+                    );
+                    build_sst(full_builder)?;
+                    data_remaining = false;
                 }
 
+                prev_key = Some(merged_iter.key().to_key_vec());
                 merged_iter.next()?;
             }
 

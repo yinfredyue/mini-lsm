@@ -472,24 +472,28 @@ impl LsmStorageInner {
         Ok(())
     }
 
-    /// Put a key-value pair into the storage by writing into the current memtable.
-    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+    pub fn write_core(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        let mvcc = self.mvcc.as_ref().unwrap();
+        let _mvcc_lock_guard = mvcc.write_lock.lock();
+        let ts = mvcc.latest_commit_ts() + 1;
+
         let state = self.state.read();
         let memtable = state.memtable.clone();
-        memtable.put(KeySlice::from_slice(key, TS_DEFAULT), value)?;
+        memtable.put(KeySlice::from_slice(key, ts), value)?;
         drop(state);
 
+        mvcc.update_commit_ts(ts);
         self.may_freeze(memtable)
+    }
+
+    /// Put a key-value pair into the storage by writing into the current memtable.
+    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        self.write_core(key, value)
     }
 
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, key: &[u8]) -> Result<()> {
-        let state = self.state.read();
-        let memtable = state.memtable.clone();
-        memtable.put(KeySlice::from_slice(key, TS_DEFAULT), &[])?;
-        drop(state);
-
-        self.may_freeze(memtable)
+        self.write_core(key, &[])
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {

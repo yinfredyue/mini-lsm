@@ -39,8 +39,8 @@ impl<I: StorageIterator> Ord for HeapWrapper<I> {
 /// iterators, prefer the one with smaller index.
 pub struct MergeIterator<I: StorageIterator> {
     // Invariant: iters and current only contain valid iterators.
-    // This is necessary HeapWrapper::partial_cmp assumes the iter is valid - it
-    // calls key() without checking is_valid()
+    // This is necessary because HeapWrapper::partial_cmp assumes the iter is
+    // valid - it calls key() without checking is_valid()
     iters: BinaryHeap<HeapWrapper<I>>,
     current: Option<HeapWrapper<I>>,
 }
