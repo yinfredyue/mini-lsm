@@ -164,3 +164,9 @@ impl BlockIterator {
         }
     }
 }
+
+impl std::fmt::Debug for BlockIterator {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "BlockIterator[key={:?}]", self.key)
+    }
+}

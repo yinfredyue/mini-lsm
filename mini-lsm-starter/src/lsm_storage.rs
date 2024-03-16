@@ -3,12 +3,11 @@
 use std::collections::HashMap;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
-use crossbeam_skiplist::SkipMap;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::block::Block;
@@ -27,7 +26,7 @@ use crate::mem_table::{
     map_bound_u8_to_bytes, map_lower_bound_u8_to_keyslice, map_upper_bound_u8_to_keyslice,
     MemTable, MemTableIterator,
 };
-use crate::mvcc::txn::Transaction;
+use crate::mvcc::txn::{Transaction, TxnIterator};
 use crate::mvcc::LsmMvccInner;
 use crate::table::{FileObject, SsTable, SsTableBuilder, SsTableIterator};
 
@@ -250,11 +249,7 @@ impl MiniLsm {
         self.inner.sync()
     }
 
-    pub fn scan(
-        &self,
-        lower: Bound<&[u8]>,
-        upper: Bound<&[u8]>,
-    ) -> Result<FusedIterator<LsmIterator>> {
+    pub fn scan(&self, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> Result<TxnIterator> {
         self.inner.scan(lower, upper)
     }
 
@@ -445,8 +440,12 @@ impl LsmStorageInner {
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         println!("get({:?})", key);
+        self.get_with_ts(key, TS_RANGE_BEGIN)
+    }
 
-        let lower = Bound::Included(KeySlice::from_slice(key, TS_RANGE_BEGIN));
+    pub fn get_with_ts(&self, key: &[u8], read_ts: u64) -> Result<Option<Bytes>> {
+        println!("get_with_ts({:?}, {:?})", key, read_ts);
+        let lower = Bound::Included(KeySlice::from_slice(key, read_ts));
         let upper = Bound::Included(KeySlice::from_slice(key, TS_RANGE_END));
         let iter = self.get_scan_iter(lower, upper)?;
 
@@ -481,6 +480,12 @@ impl LsmStorageInner {
         let mvcc = self.mvcc.as_ref().unwrap();
         let _mvcc_lock_guard = mvcc.write_lock.lock();
         let ts = mvcc.latest_commit_ts() + 1;
+        println!(
+            "Write({}, {}, ts={})",
+            String::from_utf8_lossy(key),
+            String::from_utf8_lossy(value),
+            ts
+        );
 
         let state = self.state.read();
         let memtable = state.memtable.clone();
@@ -618,14 +623,7 @@ impl LsmStorageInner {
     }
 
     pub fn new_txn(self: &Arc<Self>) -> Result<Arc<Transaction>> {
-        // no-op
-        Ok(Arc::new(Transaction {
-            read_ts: TS_DEFAULT,
-            inner: Arc::clone(self),
-            local_storage: Arc::new(SkipMap::new()),
-            committed: Arc::new(AtomicBool::new(false)),
-            key_hashes: None,
-        }))
+        Ok(self.mvcc.as_ref().unwrap().new_txn(self.clone(), false))
     }
 
     fn get_memtable_iter(
@@ -640,6 +638,8 @@ impl LsmStorageInner {
             .iter()
             .map(|t| Box::new(t.scan(lower, upper)))
             .collect();
+
+        println!("memtables: {:?}", memtables);
 
         MergeIterator::create(memtable_iters)
     }
@@ -678,13 +678,17 @@ impl LsmStorageInner {
             })
             .collect::<Vec<_>>();
 
+        println!("L0 ssts: {:?}", sstables);
+
         let sstable_iters: Vec<SsTableIterator> = sstables
             .into_iter()
             .map(|table| match lower {
                 Bound::Included(lower) => SsTableIterator::create_and_seek_to_key(table, lower),
                 Bound::Excluded(lower) => {
                     let mut iter = SsTableIterator::create_and_seek_to_key(table, lower)?;
-                    iter.next()?;
+                    if iter.is_valid() && iter.key() == lower {
+                        iter.next()?;
+                    }
                     Ok(iter)
                 }
                 Bound::Unbounded => SsTableIterator::create_and_seek_to_first(table),
@@ -694,7 +698,7 @@ impl LsmStorageInner {
         let sstable_iters: Vec<Box<SsTableIterator>> =
             sstable_iters.into_iter().map(Box::new).collect();
 
-        println!("sstable_iters: {:?}", sstable_iters);
+        println!("l0 sstable_iters: {:?}", sstable_iters);
 
         Ok(MergeIterator::create(sstable_iters))
     }
@@ -713,7 +717,9 @@ impl LsmStorageInner {
             Bound::Included(lower) => SstConcatIterator::create_and_seek_to_key(ln_ssts, lower),
             Bound::Excluded(lower) => {
                 let mut iter = SstConcatIterator::create_and_seek_to_key(ln_ssts, lower)?;
-                iter.next()?;
+                if iter.is_valid() && iter.key() == lower {
+                    iter.next()?;
+                }
                 Ok(iter)
             }
             Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(ln_ssts),
@@ -753,21 +759,30 @@ impl LsmStorageInner {
         Ok(merged)
     }
 
-    /// Create an iterator over a range of keys.
-    pub fn scan(
+    pub fn scan_with_ts(
         &self,
         lower: Bound<&[u8]>,
         upper: Bound<&[u8]>,
+        read_ts: u64,
     ) -> Result<FusedIterator<LsmIterator>> {
+        println!(
+            "scan_with_ts(lower={:?}, upper={:?}, ts={})",
+            lower, upper, read_ts
+        );
         let iter = self.get_scan_iter(
             map_lower_bound_u8_to_keyslice(lower),
             map_upper_bound_u8_to_keyslice(upper),
         )?;
-        let read_ts = self.mvcc.as_ref().unwrap().latest_commit_ts();
         Ok(FusedIterator::new(LsmIterator::new(
             iter,
             map_bound_u8_to_bytes(upper),
             read_ts,
         )?))
+    }
+
+    /// Create an iterator over a range of keys.
+    pub fn scan(self: &Arc<Self>, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> Result<TxnIterator> {
+        let txn = self.new_txn()?;
+        txn.scan(lower, upper)
     }
 }

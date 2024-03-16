@@ -74,21 +74,23 @@ impl StorageIterator for LsmIterator {
     }
 
     fn next(&mut self) -> Result<()> {
+        println!("next() starts");
+
         while self.inner.is_valid() {
             // Skip if:
-            // 1. Same key as before (we have returned the latest version)
-            // 2. Value is empty (has been deleted)
-            // 3. The key was written after the transaction is created
-            let (should_skip, should_update_prev_key) =
-                if self.key() == self.prev_key.as_ref().unwrap_or(&vec![]) {
-                    (true, false)
-                } else if self.value().is_empty() {
-                    (true, true)
-                } else if self.inner.key().ts() > self.read_ts {
-                    (true, false)
-                } else {
-                    (false, true)
-                };
+            // - The key was written after the transaction is created
+            // - Same key as before (we have returned the latest version)
+            // - Value is empty (has been deleted)
+            #[allow(clippy::if_same_then_else)]
+            let (should_skip, should_update_prev_key) = if self.inner.key().ts() > self.read_ts {
+                (true, false)
+            } else if self.key() == self.prev_key.as_ref().unwrap_or(&vec![]) {
+                (true, false)
+            } else if self.value().is_empty() {
+                (true, true)
+            } else {
+                (false, true)
+            };
 
             if should_update_prev_key {
                 self.prev_key = Some(self.key().to_vec());
@@ -100,6 +102,12 @@ impl StorageIterator for LsmIterator {
                 break;
             }
         }
+
+        println!(
+            "next() finishes, is_valid: {}, prev_key: {}",
+            self.is_valid(),
+            String::from_utf8_lossy(self.prev_key.as_ref().unwrap_or(&vec![])),
+        );
 
         Ok(())
     }

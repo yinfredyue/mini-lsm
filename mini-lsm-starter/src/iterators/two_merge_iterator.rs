@@ -97,6 +97,12 @@ impl<
     }
 
     fn num_active_iterators(&self) -> usize {
-        self.a.num_active_iterators() + self.b.num_active_iterators()
+        let first = self.a.num_active_iterators();
+        let second = self.b.num_active_iterators();
+        println!(
+            "TwoMergeIterator num_active_iterators: {}+{}",
+            first, second
+        );
+        first + second
     }
 }
