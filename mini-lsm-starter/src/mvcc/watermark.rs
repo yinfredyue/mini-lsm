@@ -21,4 +21,8 @@ impl Watermark {
     pub fn watermark(&self) -> Option<u64> {
         Some(0)
     }
+
+    pub fn num_retained_snapshots(&self) -> usize {
+        0
+    }
 }

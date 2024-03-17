@@ -470,6 +470,10 @@ impl LsmStorageInner {
         compaction_filters.push(compaction_filter);
     }
 
+    pub fn mvcc(&self) -> &LsmMvccInner {
+        self.mvcc.as_ref().unwrap()
+    }
+
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(self: &Arc<Self>, key: &[u8]) -> Result<Option<Bytes>> {
         println!("get({:?})", key);
