@@ -272,13 +272,11 @@ impl LsmStorageInner {
 
             // Iterate over merged iterator
             let mut merged_iter = MergeIterator::create(sstable_iters);
-            let mut data_remaining = false;
 
             // Put different versions of the same key in the same SST
             let mut prev_key: Option<KeyVec> = None;
             while merged_iter.is_valid() {
                 builder.add(merged_iter.key(), merged_iter.value());
-                data_remaining = true;
 
                 let is_same_key = if let Some(prev_key) = prev_key {
                     prev_key.as_key_slice().key_ref() == merged_iter.key().key_ref()
@@ -292,7 +290,6 @@ impl LsmStorageInner {
                         SsTableBuilder::new(self.options.block_size),
                     );
                     build_sst(full_builder)?;
-                    data_remaining = false;
                 }
 
                 prev_key = Some(merged_iter.key().to_key_vec());
@@ -300,7 +297,7 @@ impl LsmStorageInner {
             }
 
             // Add any remaining data
-            if data_remaining {
+            if !builder.is_empty() {
                 build_sst(builder)?;
             }
         }

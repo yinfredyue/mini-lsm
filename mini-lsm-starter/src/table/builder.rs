@@ -17,6 +17,7 @@ pub struct SsTableBuilder {
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
     max_ts: u64,
+    is_empty: bool,
 }
 
 impl SsTableBuilder {
@@ -30,6 +31,7 @@ impl SsTableBuilder {
             meta: Vec::new(),
             block_size,
             max_ts: 0,
+            is_empty: true,
         }
     }
 
@@ -71,6 +73,7 @@ impl SsTableBuilder {
             self.last_key = key.to_key_vec().into_key_bytes();
         }
         self.max_ts = self.max_ts.max(key.ts());
+        self.is_empty = false;
     }
 
     /// Get the estimated size of the SSTable.
@@ -130,6 +133,10 @@ impl SsTableBuilder {
             bloom: None,
             max_ts: self.max_ts,
         })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.is_empty
     }
 
     #[cfg(test)]
