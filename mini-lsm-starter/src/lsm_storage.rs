@@ -495,8 +495,29 @@ impl LsmStorageInner {
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
-    pub fn write_batch<T: AsRef<[u8]>>(&self, _batch: &[WriteBatchRecord<T>]) -> Result<()> {
-        unimplemented!()
+    pub fn write_batch<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<()> {
+        let mvcc = self.mvcc.as_ref().unwrap();
+        let _mvcc_lock_guard = mvcc.write_lock.lock();
+        let ts = mvcc.latest_commit_ts() + 1;
+
+        let state = self.state.read();
+        let memtable = state.memtable.clone();
+
+        for w in batch {
+            match w {
+                WriteBatchRecord::Put(key, value) => {
+                    memtable.put(KeySlice::from_slice(key.as_ref(), ts), value.as_ref())
+                }
+                WriteBatchRecord::Del(key) => {
+                    memtable.put(KeySlice::from_slice(key.as_ref(), ts), &[])
+                }
+            }?;
+        }
+
+        mvcc.update_commit_ts(ts);
+
+        drop(state);
+        self.may_freeze(memtable)
     }
 
     fn may_freeze(&self, memtable: Arc<MemTable>) -> Result<()> {
@@ -514,34 +535,14 @@ impl LsmStorageInner {
         Ok(())
     }
 
-    pub fn write_core(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        let mvcc = self.mvcc.as_ref().unwrap();
-        let _mvcc_lock_guard = mvcc.write_lock.lock();
-        let ts = mvcc.latest_commit_ts() + 1;
-        println!(
-            "Write({}, {}, ts={})",
-            String::from_utf8_lossy(key),
-            String::from_utf8_lossy(value),
-            ts
-        );
-
-        let state = self.state.read();
-        let memtable = state.memtable.clone();
-        memtable.put(KeySlice::from_slice(key, ts), value)?;
-        drop(state);
-
-        mvcc.update_commit_ts(ts);
-        self.may_freeze(memtable)
-    }
-
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        self.write_core(key, value)
+        self.write_batch(&[WriteBatchRecord::Put(key, value)])
     }
 
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, key: &[u8]) -> Result<()> {
-        self.write_core(key, &[])
+        self.write_batch(&[WriteBatchRecord::Del(key)])
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
