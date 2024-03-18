@@ -161,7 +161,12 @@ impl<'a> Key<&'a [u8]> {
 
 impl<T: AsRef<[u8]> + Debug> Debug for Key<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Key<{:?}, {}>", self.0, self.1)
+        write!(
+            f,
+            "Key<{:?}, {}>",
+            String::from_utf8_lossy(self.0.as_ref()),
+            self.1
+        )
     }
 }
 

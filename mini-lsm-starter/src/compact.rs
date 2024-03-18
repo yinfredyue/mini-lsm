@@ -22,7 +22,7 @@ use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
 use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum CompactionTask {
     Leveled(LeveledCompactionTask),
     Tiered(TieredCompactionTask),
@@ -134,7 +134,9 @@ impl LsmStorageInner {
             .cloned()
             .collect();
 
-        self.create_sorted_run(ssts)
+        let compact_to_bottom_level =
+            CompactionTask::Leveled(task.clone()).compact_to_bottom_level();
+        self.create_sorted_run(compact_to_bottom_level, ssts)
     }
 
     fn tiered_compaction(&self, task: &TieredCompactionTask) -> Result<Vec<Arc<SsTable>>> {
@@ -147,7 +149,9 @@ impl LsmStorageInner {
             .cloned()
             .collect();
 
-        self.create_sorted_run(ssts)
+        let compact_to_bottom_level =
+            CompactionTask::Tiered(task.clone()).compact_to_bottom_level();
+        self.create_sorted_run(compact_to_bottom_level, ssts)
     }
 
     fn simple_compaction(&self, task: &SimpleLeveledCompactionTask) -> Result<Vec<Arc<SsTable>>> {
@@ -163,7 +167,9 @@ impl LsmStorageInner {
         .cloned()
         .collect();
 
-        self.create_sorted_run(ssts)
+        let compact_to_bottom_level =
+            CompactionTask::Simple(task.clone()).compact_to_bottom_level();
+        self.create_sorted_run(compact_to_bottom_level, ssts)
     }
 
     pub fn force_full_compaction(&self) -> Result<()> {
@@ -241,10 +247,14 @@ impl LsmStorageInner {
             .map(|res| res.cloned())
             .collect::<Result<Vec<_>>>()?;
 
-        self.create_sorted_run(sstables)
+        self.create_sorted_run(true, sstables)
     }
 
-    fn create_sorted_run(&self, ssts: Vec<Arc<SsTable>>) -> Result<Vec<Arc<SsTable>>> {
+    fn create_sorted_run(
+        &self,
+        compact_to_bottom_level: bool,
+        ssts: Vec<Arc<SsTable>>,
+    ) -> Result<Vec<Arc<SsTable>>> {
         let sstable_iters = ssts
             .into_iter()
             .map(SsTableIterator::create_and_seek_to_first)
@@ -268,32 +278,73 @@ impl LsmStorageInner {
         };
 
         {
-            let mut builder = SsTableBuilder::new(self.options.block_size);
-
-            // Iterate over merged iterator
-            let mut merged_iter = MergeIterator::create(sstable_iters);
-
             // Put different versions of the same key in the same SST
-            let mut prev_key: Option<KeyVec> = None;
-            while merged_iter.is_valid() {
-                builder.add(merged_iter.key(), merged_iter.value());
+            let mut builder = SsTableBuilder::new(self.options.block_size);
+            let mut prev_key: Option<KeyVec> = None; // prev key included in the sorted run
+            let watermark = self.mvcc().watermark();
+            println!(
+                "watermark: {}, is_compact_to_bottom_level: {}",
+                watermark, compact_to_bottom_level
+            );
 
-                let is_same_key = if let Some(prev_key) = prev_key {
-                    prev_key.as_key_slice().key_ref() == merged_iter.key().key_ref()
+            let mut iter = MergeIterator::create(sstable_iters);
+            while iter.is_valid() {
+                let key = iter.key();
+                let value = iter.value();
+                println!(
+                    "key: {:?}, value: {:?}",
+                    key,
+                    String::from_utf8_lossy(value)
+                );
+
+                // Keep a version if:
+                // * It's above the watermark, or
+                // * It's the latest version below or equal the watermark
+                let is_above_watermark = key.ts() > watermark;
+                let is_latest_version_below_or_equal_watermark =
+                    if let Some(prev_key) = prev_key.as_ref() {
+                        let is_same_key = prev_key.as_key_slice().key_ref() == key.key_ref();
+                        !is_same_key || prev_key.ts() > watermark
+                    } else {
+                        true
+                    };
+
+                if is_above_watermark || is_latest_version_below_or_equal_watermark {
+                    println!("Keep!");
+
+                    // For values above watermark, write as is.
+                    // For values below or equal watermark:
+                    // - put, always add to sorted run
+                    // - delete, add to sorted run only if not at the bottom level
+                    // Note: even when we don't add to the builder, we still
+                    // update `prev_key`.
+                    if is_above_watermark
+                        || (is_latest_version_below_or_equal_watermark
+                            && (!value.is_empty() || !compact_to_bottom_level))
+                    {
+                        builder.add(key, value);
+                    }
+
+                    let is_same_key = if let Some(prev_key) = prev_key.as_ref() {
+                        prev_key.as_key_slice().key_ref() == key.key_ref()
+                    } else {
+                        false
+                    };
+
+                    if !is_same_key && builder.estimated_size() > self.options.target_sst_size {
+                        let full_builder = std::mem::replace(
+                            &mut builder,
+                            SsTableBuilder::new(self.options.block_size),
+                        );
+                        build_sst(full_builder)?;
+                    }
+
+                    prev_key = Some(key.to_key_vec());
                 } else {
-                    false
-                };
-
-                if !is_same_key && builder.estimated_size() > self.options.target_sst_size {
-                    let full_builder = std::mem::replace(
-                        &mut builder,
-                        SsTableBuilder::new(self.options.block_size),
-                    );
-                    build_sst(full_builder)?;
+                    println!("Discard!");
                 }
 
-                prev_key = Some(merged_iter.key().to_key_vec());
-                merged_iter.next()?;
+                iter.next()?;
             }
 
             // Add any remaining data

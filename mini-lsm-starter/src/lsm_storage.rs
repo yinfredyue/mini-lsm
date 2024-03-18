@@ -416,14 +416,18 @@ impl LsmStorageInner {
         let existing_max_ts = {
             // `state.memtable` is restored from WAL if `options.enable_wal`
             let max_ts_from_memtables = {
-                let mut max_ts = TS_DEFAULT;
+                let mut max_ts: Option<u64> = None;
 
                 let mut all_memtables = state.imm_memtables.clone();
                 all_memtables.insert(0, state.memtable.clone());
                 for tbl in all_memtables {
                     let mut iter = tbl.scan(Bound::Unbounded, Bound::Unbounded);
                     while iter.is_valid() {
-                        max_ts = max_ts.max(iter.key().ts());
+                        max_ts = if let Some(max_ts) = max_ts {
+                            Some(max_ts.max(iter.key().ts()))
+                        } else {
+                            Some(iter.key().ts())
+                        };
                         iter.next()?;
                     }
                 }
@@ -431,19 +435,15 @@ impl LsmStorageInner {
                 max_ts
             };
 
-            let max_ts_from_ssts = state
-                .sstables
-                .values()
-                .map(|sst| sst.max_ts())
-                .max()
-                .unwrap_or(TS_DEFAULT);
+            let max_ts_from_ssts = state.sstables.values().map(|sst| sst.max_ts()).max();
 
             println!(
-                "max_ts_from_memtables: {}, max_ts_from_ssts: {}",
+                "max_ts_from_memtables: {:?}, max_ts_from_ssts: {:?}",
                 max_ts_from_memtables, max_ts_from_ssts
             );
             max_ts_from_memtables.max(max_ts_from_ssts)
         };
+        let next_ts = existing_max_ts.map_or(TS_DEFAULT, |v| v + 1);
 
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
@@ -454,7 +454,7 @@ impl LsmStorageInner {
             compaction_controller,
             manifest: Some(manifest),
             options: options.into(),
-            mvcc: Some(LsmMvccInner::new(existing_max_ts + 1)),
+            mvcc: Some(LsmMvccInner::new(next_ts)),
             compaction_filters: Arc::new(Mutex::new(Vec::new())),
         };
 
@@ -495,10 +495,16 @@ impl LsmStorageInner {
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
-    pub fn write_batch<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<()> {
+    pub fn write_batch<T: AsRef<[u8]>>(
+        self: &Arc<Self>,
+        batch: &[WriteBatchRecord<T>],
+    ) -> Result<()> {
+        println!("write_batch");
         let mvcc = self.mvcc.as_ref().unwrap();
         let _mvcc_lock_guard = mvcc.write_lock.lock();
         let ts = mvcc.latest_commit_ts() + 1;
+
+        let _txn = self.new_txn()?;
 
         let state = self.state.read();
         let memtable = state.memtable.clone();
@@ -506,12 +512,22 @@ impl LsmStorageInner {
         for w in batch {
             match w {
                 WriteBatchRecord::Put(key, value) => {
-                    memtable.put(KeySlice::from_slice(key.as_ref(), ts), value.as_ref())
+                    let key = KeySlice::from_slice(key.as_ref(), ts);
+                    memtable.put(key, value.as_ref())?;
+
+                    println!(
+                        "Put({:?}, {:?})",
+                        key,
+                        String::from_utf8_lossy(value.as_ref())
+                    );
                 }
                 WriteBatchRecord::Del(key) => {
-                    memtable.put(KeySlice::from_slice(key.as_ref(), ts), &[])
+                    let key = KeySlice::from_slice(key.as_ref(), ts);
+                    memtable.put(key, &[])?;
+
+                    println!("Del({:?})", key);
                 }
-            }?;
+            }
         }
 
         mvcc.update_commit_ts(ts);
@@ -536,12 +552,12 @@ impl LsmStorageInner {
     }
 
     /// Put a key-value pair into the storage by writing into the current memtable.
-    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+    pub fn put(self: &Arc<Self>, key: &[u8], value: &[u8]) -> Result<()> {
         self.write_batch(&[WriteBatchRecord::Put(key, value)])
     }
 
     /// Remove a key from the storage by writing an empty value.
-    pub fn delete(&self, key: &[u8]) -> Result<()> {
+    pub fn delete(self: &Arc<Self>, key: &[u8]) -> Result<()> {
         self.write_batch(&[WriteBatchRecord::Del(key)])
     }
 
