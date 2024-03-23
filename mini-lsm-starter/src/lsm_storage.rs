@@ -676,7 +676,11 @@ impl LsmStorageInner {
     }
 
     pub fn new_txn(self: &Arc<Self>) -> Result<Arc<Transaction>> {
-        Ok(self.mvcc.as_ref().unwrap().new_txn(self.clone(), false))
+        Ok(self
+            .mvcc
+            .as_ref()
+            .unwrap()
+            .new_txn(self.clone(), self.options.serializable))
     }
 
     fn get_memtable_iter(

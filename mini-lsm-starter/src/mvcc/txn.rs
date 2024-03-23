@@ -17,12 +17,14 @@ use crate::{
     mem_table::map_bound_u8_to_bytes,
 };
 
+use super::CommittedTxnData;
+
 pub struct Transaction {
     pub(crate) read_ts: u64,
     pub(crate) inner: Arc<LsmStorageInner>,
     pub(crate) local_storage: Arc<SkipMap<Bytes, Bytes>>,
     pub(crate) committed: Arc<AtomicBool>,
-    /// Write set and read set
+    /// read set, and write set
     pub(crate) key_hashes: Option<Mutex<(HashSet<u32>, HashSet<u32>)>>,
 }
 
@@ -31,6 +33,8 @@ impl Transaction {
         if self.committed.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(anyhow!("get() on committed txn"));
         }
+
+        self.add_to_readset(key);
 
         if let Some(entry) = self.local_storage.get(&Bytes::copy_from_slice(key)) {
             if entry.value().is_empty() {
@@ -90,6 +94,8 @@ impl Transaction {
             panic!("put() on committed txn");
         }
 
+        self.add_to_writeset(key);
+
         self.local_storage
             .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
     }
@@ -99,13 +105,50 @@ impl Transaction {
             panic!("delete() on committed txn");
         }
 
+        self.add_to_writeset(key);
+
         self.local_storage
             .insert(Bytes::copy_from_slice(key), Bytes::new());
     }
 
     pub fn commit(&self) -> Result<()> {
         if self.committed.load(std::sync::atomic::Ordering::SeqCst) {
-            panic!("commit() on committed txn");
+            return Err(anyhow!("commit() on committed txn"));
+        }
+
+        // Detect conflcits in optimistic concurrency control
+        let mvcc = self.inner.mvcc();
+        let _commit_lock = mvcc.commit_lock.lock();
+        let commit_ts = mvcc.latest_commit_ts() + 1;
+        let mut committed_txns = mvcc.committed_txns.lock();
+        let mut conflict_detected = false;
+
+        println!(
+            "Committing txn: read_ts: {}, commit_ts: {}",
+            self.read_ts, commit_ts
+        );
+
+        if let Some(key_hashes) = self.key_hashes.as_ref() {
+            let key_hashes = key_hashes.lock();
+
+            // Only check write txns - read-only txns can always commit
+            if !key_hashes.1.is_empty() {
+                // Check if the readset overlaps with writeset of other txns
+                let overlapping_txns = committed_txns
+                    .range((Bound::Excluded(self.read_ts), Bound::Excluded(commit_ts)));
+
+                for (_ts, txn) in overlapping_txns {
+                    if !txn.key_hashes.is_disjoint(&key_hashes.0) {
+                        conflict_detected = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if conflict_detected {
+            println!("Conflicts detected, cannot commit");
+            return Err(anyhow!("Conlicts detected, cannot commit"));
         }
 
         self.committed
@@ -123,7 +166,38 @@ impl Transaction {
             })
             .collect();
 
-        self.inner.write_batch(&records[..])
+        self.inner.write_batch(&records[..])?;
+
+        if let Some(key_hashes) = self.key_hashes.as_ref() {
+            let key_hashes = key_hashes.lock();
+
+            committed_txns.insert(
+                commit_ts,
+                CommittedTxnData {
+                    key_hashes: key_hashes.1.clone(),
+                    read_ts: self.read_ts,
+                    commit_ts,
+                },
+            );
+        }
+
+        println!("Committed successfully, commit_ts = {}", commit_ts);
+
+        Ok(())
+    }
+
+    fn add_to_readset(&self, key: &[u8]) {
+        if let Some(key_hashes) = self.key_hashes.as_ref() {
+            let mut hashes = key_hashes.lock();
+            hashes.0.insert(farmhash::hash32(key));
+        }
+    }
+
+    fn add_to_writeset(&self, key: &[u8]) {
+        if let Some(key_hashes) = self.key_hashes.as_ref() {
+            let mut hashes = key_hashes.lock();
+            hashes.1.insert(farmhash::hash32(key));
+        }
     }
 }
 
@@ -216,6 +290,12 @@ impl StorageIterator for TxnIterator {
 
     fn next(&mut self) -> Result<()> {
         while self.is_valid() {
+            if self.is_valid() {
+                // Record key into readset
+                self._txn.add_to_readset(self.iter.key());
+                println!("scan(): add {:?} to readset", self.iter.key());
+            }
+
             self.iter.next()?;
 
             if self.is_valid() && !self.value().is_empty() {
