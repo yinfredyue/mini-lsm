@@ -58,14 +58,15 @@ impl Transaction {
         let txn_local_iter = {
             let lower = map_bound_u8_to_bytes(lower);
             let upper = map_bound_u8_to_bytes(upper);
-            let mut range = self.local_storage.range((lower.clone(), upper.clone()));
-            let item = if let Some(entry) = range.nth(0) {
-                (entry.key().clone(), entry.value().clone())
-            } else {
-                (Bytes::new(), Bytes::new())
+
+            let (item, should_advance) = {
+                let mut range = self.local_storage.range((lower.clone(), upper.clone()));
+                if let Some(entry) = range.next() {
+                    ((entry.key().clone(), entry.value().clone()), true)
+                } else {
+                    ((Bytes::new(), Bytes::new()), false)
+                }
             };
-            let should_advance = !item.0.is_empty();
-            println!("TxnLocalIterator init: {:?}", item);
 
             let iter = TxnLocalIteratorBuilder {
                 map: self.local_storage.clone(),
